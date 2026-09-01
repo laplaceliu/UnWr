@@ -18,6 +18,51 @@ import {
   SETTING_F, TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
+
+/**
+ * 确保 select 字段包含将写入的选项（缺失则合并进字段定义）。
+ *
+ * 为什么必须自动补：select 是封闭列表，但小说的人物性格、设定分类
+ * 本质开放——预置选项永远不够（实测用户写「沉默寡言」「人物」分类
+ * 均触发 800030005）。写前读字段 → diff → 整体提交合并结果。
+ *
+ * 性能：每次 upsert 多一次 field-get + 至多一次 field-update。
+ * 对「选项已齐」的常见路径只有 field-get 的开销。
+ */
+async function ensureSelectOptions(
+  baseToken: string,
+  table: string,
+  fieldName: string,
+  incoming: readonly string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const values = incoming.filter((v) => v.trim() !== '')
+  if (values.length === 0) return
+
+  const { field } = await base.getField(baseToken, table, fieldName, signal)
+  if (field.type !== 'select') return
+
+  const existing = new Set((field.options ?? []).map((o) => o.name))
+  const missing = values.filter((v) => !existing.has(v))
+  if (missing.length === 0) return
+
+  // field-update 是 full PUT：必须提交含既有选项的完整定义
+  await base.updateField(
+    baseToken,
+    table,
+    fieldName,
+    {
+      name: field.name,
+      type: 'select',
+      ...field.multiple === undefined ? {} : { multiple: field.multiple },
+      options: [
+        ...(field.options ?? []),
+        ...missing.map((name) => ({ name })),
+      ],
+    },
+    signal,
+  )
+}
 import { createRecordsWithSelfHeal } from './selfheal.ts'
 
 /** 可写入的字段集合（可变，便于逐字段赋值）。 */
@@ -105,6 +150,10 @@ export async function upsertSetting(
   input: SettingInput,
   signal?: AbortSignal,
 ): Promise<UpsertResult> {
+  // 分类是 select：先补齐缺失选项（用户可能用「人物」「事件」等未预置分类）
+  if (input.category !== undefined) {
+    await ensureSelectOptions(baseToken, TABLE.SETTING, SETTING_F.CATEGORY, input.category, signal)
+  }
   const fields: Fields = { [SETTING_F.TERM]: input.term }
   if (input.category !== undefined) fields[SETTING_F.CATEGORY] = input.category
   if (input.definition !== undefined) fields[SETTING_F.DEFINITION] = input.definition
@@ -167,6 +216,10 @@ export async function upsertCharacter(
   input: CharacterInput,
   signal?: AbortSignal,
 ): Promise<UpsertResult> {
+  // 性格标签是 select：先补齐缺失选项（人物性格本质开放，预置不够用）
+  if (input.traits !== undefined) {
+    await ensureSelectOptions(baseToken, TABLE.CHARACTER, CHARACTER_F.TRAITS, input.traits, signal)
+  }
   const fields: Fields = { [CHARACTER_F.NAME]: input.name }
   if (input.alias !== undefined) fields[CHARACTER_F.ALIAS] = input.alias
   if (input.role !== undefined) fields[CHARACTER_F.ROLE] = input.role

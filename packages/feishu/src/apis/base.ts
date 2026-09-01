@@ -69,6 +69,59 @@ export function listFields(
   )
 }
 
+/** 单字段完整定义（field-get 返回）。 */
+export interface FieldDetail extends FieldInfo {
+  multiple?: boolean
+  options?: { name: string; hue?: string; lightness?: string }[]
+  style?: Record<string, unknown>
+  link_table?: string
+  expression?: string
+}
+
+/** 获取单个字段定义。 */
+export async function getField(
+  baseToken: string,
+  tableId: string,
+  fieldIdOrName: string,
+  signal?: AbortSignal,
+): Promise<{ field: FieldDetail }> {
+  return runCli<{ field: FieldDetail }>(
+    ['base', '+field-get',
+      '--base-token', baseToken,
+      '--table-id', tableId,
+      '--field-id', fieldIdOrName],
+    { signal },
+  )
+}
+
+/**
+ * 更新字段定义（full PUT 语义，需 --yes 的高危操作）。
+ *
+ * 典型用途：为 select 字段合并新选项（先 getField 读现状 →
+ * 合并 → 整体提交）。提交的是完整定义，不要只传增量。
+ */
+export async function updateField(
+  baseToken: string,
+  tableId: string,
+  fieldIdOrName: string,
+  definition: FieldSchema,
+  signal?: AbortSignal,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const f = await dir.write('field.json', JSON.stringify(definition))
+    await runCli(
+      ['base', '+field-update',
+        '--base-token', baseToken,
+        '--table-id', tableId,
+        '--field-id', fieldIdOrName,
+        '--json', `@${f.relative}`,
+        // 给自家作品库的 select 字段补选项是受控操作，自动确认
+        '--yes'],
+      { cwd: dir.cwd, signal },
+    )
+  })
+}
+
 /** 批量创建字段。数组按顺序创建，遇到首个失败即停止且不回滚。 */
 export async function createFields(
   baseToken: string,

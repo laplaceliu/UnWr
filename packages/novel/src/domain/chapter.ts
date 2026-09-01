@@ -204,7 +204,23 @@ export async function writeChapter(
   warnings.push(...mount.warnings)
 
   // 3. 创建正文文档（章标题由 --title 承担，正文放进所属卷文件夹或作品根文件夹）
-  const doc = await docs.createDoc(params.title, normalized, mount.parentToken === undefined ? {} : { parentToken: mount.parentToken }, signal)
+  let doc: Awaited<ReturnType<typeof docs.createDoc>>
+  try {
+    doc = await docs.createDoc(
+      params.title,
+      normalized,
+      mount.parentToken === undefined ? {} : { parentToken: mount.parentToken },
+      signal,
+    )
+  } catch (e) {
+    // 目录可能已被删除（用户清理云盘），而作品表里还存着失效 URL。
+    // 降级为根目录创建，绝不因组织结构问题阻断写作。
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/parent.*(not found|not exist)|not.*exist.*parent/i.test(msg) || mount.parentToken === undefined) throw e
+    warnings.push('作品目录已失效（可能被删除），本次正文落在「我的文档」根目录。'
+      + '请重新执行 novel_manage_work(action=link_folder) 修复目录。')
+    doc = await docs.createDoc(params.title, normalized, {}, signal)
+  }
   if (mount.parentToken === undefined) {
     warnings.push('作品未挂接文档目录，正文已创建在「我的文档」根目录。'
       + '可用 novel_manage_work(action=link_folder) 为作品创建目录，此后正文自动归位。')

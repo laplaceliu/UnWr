@@ -56,6 +56,11 @@ export function registerWorkTools(ctx: Context): void {
         type: 'string', enum: ['第一人称', '第三人称限知', '第三人称全知'],
         description: 'Point of view (create / update_config).',
       },
+      force: {
+        type: 'boolean',
+        description: 'link_folder only: recreate the work folder even if the config already '
+          + 'has one. Use when the stored folder was deleted from the drive.',
+      },
     },
     output: {
       schema: {
@@ -164,8 +169,9 @@ export function registerWorkTools(ctx: Context): void {
 
         const cfg = await getWorkConfig(args.workToken, signal)
         // 幂等检查不能只看非空：从 wiki 方案迁移来的库，字段里存的可能是
-        // 无效的 wiki URL。必须是可解析的 folder URL 才算已挂接。
-        if (drive.extractFolderToken(cfg.folderUrl) !== undefined) {
+        // 无效的 wiki URL；目录也可能已被用户删除。默认仅在「URL 可解析且
+        // 未指定 force」时跳过；写章时检测到目录失效后，模型会用 force 重建。
+        if (args.force !== true && drive.extractFolderToken(cfg.folderUrl) !== undefined) {
           return {
             action: 'link_folder',
             total: 1,
