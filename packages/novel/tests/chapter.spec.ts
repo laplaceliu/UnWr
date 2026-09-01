@@ -66,16 +66,19 @@ describe('纯函数（不依赖飞书）', () => {
 describe('工具注册', () => {
   it('注册了章节与记忆相关工具', () => {
     const tools = collectTools()
-    expect([...tools.keys()].sort()).toEqual([
-      'novel_append_chapter',
-      'novel_build_context',
-      'novel_read_chapter',
-      'novel_record_character_state',
-      'novel_record_event',
-      'novel_update_summary',
-      'novel_upsert_book_summary',
-      'novel_write_chapter',
-    ])
+    // 不断言完整列表（会随开发增长而频繁失效），只断言核心工具都在
+    expect([...tools.keys()]).toEqual(
+      expect.arrayContaining([
+        'novel_append_chapter',
+        'novel_build_context',
+        'novel_read_chapter',
+        'novel_record_character_state',
+        'novel_record_event',
+        'novel_update_summary',
+        'novel_upsert_book_summary',
+        'novel_write_chapter',
+      ]),
+    )
   })
 
   it('所有工具名符合 DSH 命名约定', () => {

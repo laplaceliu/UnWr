@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { registerContextTool } from './tools/context.ts'
 import { registerChapterTools } from './tools/chapter.ts'
 import { registerMemoryTools } from './tools/memory.ts'
+import { registerConsistencyTools } from './tools/consistency.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools']
@@ -40,6 +41,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerContextTool(ctx)
   registerChapterTools(ctx)
   registerMemoryTools(ctx)
+  registerConsistencyTools(ctx)
 
   if (config.verbose === true) {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))

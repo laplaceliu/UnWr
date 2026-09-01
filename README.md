@@ -119,7 +119,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
   --patch $UNWR_ROOT/cordis.yml
 ```
 
-## 已实现的工具
+## 已实现的工具（10 / 22）
 
 | 工具 | 说明 |
 |------|------|
@@ -131,9 +131,23 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_record_character_state` | 记录人物章末状态快照（位置/伤势/情绪/持有物） |
 | `novel_record_event` | 记录事件索引（时间线、因果链） |
 | `novel_upsert_book_summary` | 写入卷级 / 全书摘要（长程压缩记忆） |
+| `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
+| `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
 
-待实现（14 个）：改稿类、一致性检查类、设定/人物/大纲管理类。
+待实现（12 个）：改稿类、设定/人物/大纲管理类、卡文救援类。
 见 `docs/tech/01-tech-selection.md` 第四节。
+
+### 一致性检查的设计取舍
+
+检查项分两类，实现策略完全不同：
+
+| 类型 | 检查项 | 实现 |
+|------|--------|------|
+| **规则型** | H3 伏笔逾期、H5 方位/伤势、H4 时序 | 查表判定，**不需要模型**，结果确定、零成本 |
+| **语义型** | H1 设定冲突、H2 人设崩坏、H7 前后矛盾 | 工具只**备齐材料**，由模型在会话中判断 |
+
+理由：在工具里二次调用模型既贵又慢且难验证；而"人设崩了没有"这类
+判断本就该由正在写作的模型来做——它手上有完整正文上下文。
 
 ## 开发期踩坑记录
 
@@ -153,6 +167,8 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 12. `link` 字段**只能用 table_id**，不能用表名；且需在建表后单独创建
 13. link 字段创建**偶发瞬时失败**，重跑即成功（脚本内已加 3 次退避重试）
 14. 字段名不属于该表时报 `800030201 not_found`——以 `init-work.ts` 为单一真源，勿在飞书手工改名
+15. **link 字段读回只有 record id**（`[{id:'recXX'}]`），不含可读值；
+    要拿"第几章"必须先建立 `record_id → 章节号` 映射（一致性检查踩过此坑）
 
 ## 环境变量
 
