@@ -18,6 +18,7 @@ import {
   countWords, findChapterRecord, maxChapterNo, writeChapter,
 } from '../domain/chapter.ts'
 import { extractDocToken } from '../context/builder.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册章节相关工具。 */
 export function registerChapterTools(ctx: Context): void {
@@ -35,7 +36,7 @@ function registerWriteChapter(ctx: Context): void {
       + 'If the chapter already exists, this fails on purpose — use novel_append_chapter '
       + 'to continue it or novel_revise_chapter to rewrite parts of it.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       title: {
         type: 'string', required: true,
         description: 'Chapter title, e.g. "第三章 巷战". It becomes the Feishu document title.',
@@ -74,7 +75,7 @@ function registerWriteChapter(ctx: Context): void {
     },
     async execute(args, exec) {
       const result = await writeChapter(
-        args.workToken,
+        resolveWorkToken(args),
         {
           title: args.title,
           content: args.content,
@@ -104,7 +105,7 @@ function registerAppendChapter(ctx: Context): void {
     description: 'Append more prose to the end of an existing chapter document and update its '
       + 'word count. Use this to continue a chapter that already exists.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number to continue' },
       content: {
         type: 'string', required: true,
@@ -125,11 +126,11 @@ function registerAppendChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const recordId = await findChapterRecord(args.workToken, args.chapterNo, exec.signal)
+      const recordId = await findChapterRecord(resolveWorkToken(args), args.chapterNo, exec.signal)
       if (recordId === undefined) {
         throw new Error(`第 ${args.chapterNo} 章不存在，请先用 novel_write_chapter 创建。`)
       }
-      const rows = await base_listChapter(args.workToken, args.chapterNo, exec.signal)
+      const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
       const docUrl = rows.docUrl
       if (docUrl === undefined || docUrl === '') {
         throw new Error(`第 ${args.chapterNo} 章没有正文文档链接，无法续写。`)
@@ -145,7 +146,7 @@ function registerAppendChapter(ctx: Context): void {
       // 回写总字数：读取当前正文统计，避免多轮续写后数字漂移
       const full = await docs.fetchDoc(token, { docFormat: 'markdown' }, exec.signal)
       const totalWords = countWords(full.content)
-      await base_updateWords(args.workToken, recordId, totalWords, exec.signal)
+      await base_updateWords(resolveWorkToken(args), recordId, totalWords, exec.signal)
 
       return {
         chapterNo: args.chapterNo,
@@ -164,7 +165,7 @@ function registerReadChapter(ctx: Context): void {
     description: 'Read the prose of an existing chapter, or search inside it by keyword, '
       + 'or list its scene outline. Use it to check what has already been written.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       mode: {
         type: 'string', enum: ['full', 'outline', 'search'],
@@ -186,7 +187,7 @@ function registerReadChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const rows = await base_listChapter(args.workToken, args.chapterNo, exec.signal)
+      const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
       if (rows.docUrl === undefined || rows.docUrl === '') {
         throw new Error(`第 ${args.chapterNo} 章没有正文文档链接。`)
       }

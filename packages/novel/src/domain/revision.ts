@@ -33,6 +33,12 @@ export interface ReviseTarget {
    * 会在 `## ` 标题中做包含匹配。
    */
   scene?: string
+  /**
+   * 场景内段落序号（1-based，按正文段落计，不含场景标题）。
+   * 与 scene 搭配实现**结构化定位**——最佳实践：比逐字 match 稳定，
+   * 模型无需复制原文。paragraph=0 表示「场景标题块本身」。
+   */
+  paragraph?: number
   /** 要替换的原文片段（patch 模式必填；replace 模式下用于校验） */
   match?: string
 }
@@ -53,11 +59,13 @@ export interface ReviseParams {
 /** 改稿结果。 */
 export interface ReviseResult {
   /** 实际采用的定位方式 */
-  locatedBy: 'blockId' | 'scene' | 'match'
+  locatedBy: 'blockId' | 'scene' | 'paragraph' | 'match'
   /** 命中的块 id */
   blockId: string
   /** 场景标题（若按场景定位） */
   sceneTitle?: string
+  /** 命中的段落在场景内的序号（若按段落定位） */
+  paragraphIndex?: number
   /** 变更前后的字数差 */
   wordDelta: number
   /** 文档新版本号 */
@@ -196,6 +204,53 @@ export async function locateByScene(
   )
 }
 
+/**
+ * 列出场景内的段落（结构化定位的基础）。
+ *
+ * 返回场景标题块 + 场景内全部正文段落（1-based 序号 → block id + 文本）。
+ * 「结构化定位」用它把「第 N 段」翻译成 block id——比逐字 match 稳定：
+ * 模型不需要复制原文，只需要说「改第二场的第 3 段」。
+ */
+export async function getSceneParagraphs(
+  docToken: string,
+  scene: string,
+  signal?: AbortSignal,
+): Promise<{
+  sceneBlockId: string
+  sceneTitle: string
+  /** key = 1-based 段落序号 */
+  paragraphs: { index: number; blockId: string; text: string }[]
+}> {
+  const located = await locateByScene(docToken, scene, signal)
+
+  // 取全文（带块 id 的 XML），收集该 h2 之后、下一个 heading 之前的 <p> 块
+  const doc = await docs.fetchDoc(docToken, { detail: 'with-ids', docFormat: 'xml' }, signal)
+  const xml = doc.content
+
+  // 定位场景标题块的位置
+  const headingRe = new RegExp(
+    `<h[1-6]\\s+id="(${located.blockId})"[^>]*>[\\s\\S]*?</h[1-6]>`,
+  )
+  const hm = headingRe.exec(xml)
+  if (hm === null) throw new LocateError(`未在文档结构中找到场景「${located.sceneTitle}」的标题块。`, [])
+
+  const rest = xml.slice((hm.index ?? 0) + hm[0].length)
+  // 场景边界：下一个任意级标题
+  const nextHeading = /<h[1-6]\s+id="[^"]+"/.exec(rest)
+  const scope = nextHeading === null ? rest : rest.slice(0, (nextHeading.index ?? 0))
+
+  const paragraphs: { index: number; blockId: string; text: string }[] = []
+  const pRe = /<p\s+id="(doxcn[^"]+)"[^>]*>([\s\S]*?)<\/p>/g
+  let m: RegExpExecArray | null
+  while ((m = pRe.exec(scope)) !== null) {
+    const text = stripTags(m[2] ?? '').trim()
+    if (text === '') continue
+    paragraphs.push({ index: paragraphs.length + 1, blockId: m[1] ?? '', text })
+  }
+
+  return { sceneBlockId: located.blockId, sceneTitle: located.sceneTitle, paragraphs }
+}
+
 /** 读取文档当前正文字数（用于计算 delta）。 */
 async function currentWords(
   docToken: string,
@@ -264,10 +319,27 @@ export async function reviseChapter(
     res = await docs.strReplace(docToken, params.target.match, params.content, signal)
     warnings.push(...res.warnings ?? [])
   } else {
-    // replace / expand 需要定位到块
+    // replace / expand 需要定位到块。优先级：
+    //   blockId（显式）> scene+paragraph（结构化，**推荐**）> scene（整场景）
     if (params.target.blockId !== undefined && params.target.blockId !== '') {
       locatedBy = 'blockId'
       blockId = params.target.blockId
+    } else if (
+      params.target.scene !== undefined && params.target.scene !== ''
+      && params.target.paragraph !== undefined
+    ) {
+      // 结构化段落定位：无需复制原文，最稳
+      const sp = await getSceneParagraphs(docToken, params.target.scene, signal)
+      const para = sp.paragraphs.find((p) => p.index === params.target.paragraph)
+      if (para === undefined) {
+        throw new LocateError(
+          `场景「${sp.sceneTitle}」共 ${sp.paragraphs.length} 个段落，没有第 ${params.target.paragraph} 段。`,
+          sp.paragraphs.map((p) => `${p.index}. ${p.text.slice(0, 40)}`),
+        )
+      }
+      locatedBy = 'paragraph'
+      blockId = para.blockId
+      sceneTitle = sp.sceneTitle
     } else if (params.target.scene !== undefined && params.target.scene !== '') {
       const found = await locateByScene(docToken, params.target.scene, signal)
       locatedBy = 'scene'
@@ -319,6 +391,7 @@ export async function reviseChapter(
     locatedBy,
     blockId,
     ...sceneTitle === undefined ? {} : { sceneTitle },
+    ...params.target.paragraph === undefined ? {} : { paragraphIndex: params.target.paragraph },
     wordDelta,
     revisionId: res.revision_id,
     documentId: docToken,

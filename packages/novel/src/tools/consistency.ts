@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import {
   buildSemanticCheckPack, persistIssues, runRuleChecks,
 } from '../domain/consistency.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册一致性检查工具。 */
 export function registerConsistencyTools(ctx: Context): void {
@@ -35,7 +36,7 @@ function registerRuleCheck(ctx: Context): void {
       + 'For subjective issues (character voice, setting conflicts) use '
       + 'novel_get_semantic_check_pack instead.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       currentChapterNo: {
         type: 'number',
         description: 'Treat this chapter number as "now". Defaults to the highest chapter number.',
@@ -87,7 +88,7 @@ function registerRuleCheck(ctx: Context): void {
     },
     async execute(args, exec) {
       const r = await runRuleChecks(
-        args.workToken,
+        resolveWorkToken(args),
         {
           ...args.currentChapterNo === undefined ? {} : { currentChapterNo: args.currentChapterNo },
           ...args.payoffTolerance === undefined ? {} : { payoffTolerance: args.payoffTolerance },
@@ -97,7 +98,7 @@ function registerRuleCheck(ctx: Context): void {
       )
 
       const persisted = args.persist === true && r.issues.length > 0
-        ? await persistIssues(args.workToken, r.issues, exec.signal)
+        ? await persistIssues(resolveWorkToken(args), r.issues, exec.signal)
         : undefined
 
       return {
@@ -129,7 +130,7 @@ function registerSemanticPack(ctx: Context): void {
       + 'Review this YOURSELF against the chapter draft — this tool only supplies evidence, '
       + 'it does not judge.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter being checked' },
     },
     output: {
@@ -185,7 +186,7 @@ function registerSemanticPack(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const pack = await buildSemanticCheckPack(args.workToken, args.chapterNo, exec.signal)
+      const pack = await buildSemanticCheckPack(resolveWorkToken(args), args.chapterNo, exec.signal)
       return {
         ...pack,
         reviewChecklist: [

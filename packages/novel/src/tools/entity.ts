@@ -19,6 +19,7 @@ import {
   queryPlotlines, querySettings, setChapterOutline, upsertBranch,
   upsertCharacter, upsertForeshadow, upsertPlotline, upsertSetting, upsertVolume,
 } from '../domain/entity.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册实体管理工具。 */
 export function registerEntityTools(ctx: Context): void {
@@ -40,7 +41,7 @@ function registerSetting(ctx: Context): void {
       + 'updates the entry with the same term. Keep entries consistent — they are injected '
       + 'into drafting context and checked for conflicts.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
       term: { type: 'string', description: 'Entry name. REQUIRED for upsert.' },
       definition: { type: 'string', description: 'Entry definition (upsert).' },
@@ -67,7 +68,7 @@ function registerSetting(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await querySettings(args.workToken, {
+        const items = await querySettings(resolveWorkToken(args), {
           ...args.keyword === undefined ? {} : { keyword: args.keyword },
           ...args.category === undefined ? {} : { category: String(args.category[0] ?? '') },
         }, exec.signal)
@@ -76,7 +77,7 @@ function registerSetting(ctx: Context): void {
       if (args.term === undefined || args.term === '') {
         throw new Error('upsert 必须提供 term（词条名）。')
       }
-      const r = await upsertSetting(args.workToken, {
+      const r = await upsertSetting(resolveWorkToken(args), {
         term: args.term,
         ...args.definition === undefined ? {} : { definition: args.definition },
         ...args.category === undefined ? {} : { category: args.category },
@@ -98,7 +99,7 @@ function registerCharacter(ctx: Context): void {
       + 'motives are injected into drafting context and used to detect out-of-character '
       + 'writing, so keep them accurate. action="upsert" matches on the name.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
       name: { type: 'string', description: 'Character name. REQUIRED for upsert; filters results for query.' },
       alias: { type: 'string', description: 'Aliases / forms of address, comma-separated (upsert).' },
@@ -127,7 +128,7 @@ function registerCharacter(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryCharacters(args.workToken, {
+        const items = await queryCharacters(resolveWorkToken(args), {
           ...args.name === undefined ? {} : { name: args.name },
         }, exec.signal)
         return { action: 'query', total: items.length, items }
@@ -135,7 +136,7 @@ function registerCharacter(ctx: Context): void {
       if (args.name === undefined || args.name === '') {
         throw new Error('upsert 必须提供 name（人物姓名）。')
       }
-      const r = await upsertCharacter(args.workToken, {
+      const r = await upsertCharacter(resolveWorkToken(args), {
         name: args.name,
         ...args.alias === undefined ? {} : { alias: args.alias },
         ...args.role === undefined ? {} : { role: args.role },
@@ -157,7 +158,7 @@ function registerOutline(ctx: Context): void {
       + 'or create/update a volume. Use this to plan before drafting — a chapter with an '
       + 'outline drafts much better than one without.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: {
         type: 'string',
         enum: ['query', 'set_chapter_outline', 'upsert_volume'],
@@ -192,7 +193,7 @@ function registerOutline(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryOutline(args.workToken, {
+        const items = await queryOutline(resolveWorkToken(args), {
           ...args.fromChapter === undefined ? {} : { fromChapter: args.fromChapter },
           ...args.toChapter === undefined ? {} : { toChapter: args.toChapter },
         }, exec.signal)
@@ -208,7 +209,7 @@ function registerOutline(ctx: Context): void {
         if (args.outline === undefined || args.outline === '') {
           throw new Error('set_chapter_outline 需要 outline。')
         }
-        const r = await setChapterOutline(args.workToken, args.chapterNo, args.outline, {
+        const r = await setChapterOutline(resolveWorkToken(args), args.chapterNo, args.outline, {
           ...args.volume === undefined ? {} : { volume: args.volume },
           ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
         }, exec.signal)
@@ -218,7 +219,7 @@ function registerOutline(ctx: Context): void {
       if (args.volume === undefined || args.volume === '') {
         throw new Error('upsert_volume 需要 volume（卷名）。')
       }
-      const r = await upsertVolume(args.workToken, {
+      const r = await upsertVolume(resolveWorkToken(args), {
         name: args.volume,
         ...args.order === undefined ? {} : { order: args.order },
         ...args.theme === undefined ? {} : { theme: args.theme },
@@ -237,7 +238,7 @@ function registerForeshadow(ctx: Context): void {
       + 'what is still open. For genre fiction (mystery, thriller) this is the backbone of '
       + 'a fair puzzle — plant clues early and pay them off within the promised window.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
       content: { type: 'string', description: 'What the foreshadowing is. REQUIRED for upsert.' },
       type: {
@@ -266,7 +267,7 @@ function registerForeshadow(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryForeshadows(args.workToken, {
+        const items = await queryForeshadows(resolveWorkToken(args), {
           ...args.status === undefined ? {} : { status: args.status },
         }, exec.signal)
         return { action: 'query', total: items.length, items }
@@ -274,7 +275,7 @@ function registerForeshadow(ctx: Context): void {
       if (args.content === undefined || args.content === '') {
         throw new Error('upsert 必须提供 content（伏笔内容）。')
       }
-      const r = await upsertForeshadow(args.workToken, {
+      const r = await upsertForeshadow(resolveWorkToken(args), {
         content: args.content,
         ...args.type === undefined ? {} : { type: args.type },
         ...args.status === undefined ? {} : { status: args.status },
@@ -292,7 +293,7 @@ function registerPlotline(ctx: Context): void {
     description: 'Manage main and sub plotlines: their type, current stage and description. '
       + 'Useful for tracking whether a subplot has been left hanging.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
       name: { type: 'string', description: 'Plotline name. REQUIRED for upsert.' },
       type: { type: 'string', enum: ['主线', '支线'], description: 'Type (upsert); filters query.' },
@@ -317,7 +318,7 @@ function registerPlotline(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryPlotlines(args.workToken, {
+        const items = await queryPlotlines(resolveWorkToken(args), {
           ...args.type === undefined ? {} : { type: args.type },
         }, exec.signal)
         return { action: 'query', total: items.length, items }
@@ -325,7 +326,7 @@ function registerPlotline(ctx: Context): void {
       if (args.name === undefined || args.name === '') {
         throw new Error('upsert 必须提供 name（剧情线名）。')
       }
-      const r = await upsertPlotline(args.workToken, {
+      const r = await upsertPlotline(resolveWorkToken(args), {
         name: args.name,
         ...args.type === undefined ? {} : { type: args.type },
         ...args.status === undefined ? {} : { status: args.status },
@@ -343,7 +344,7 @@ function registerBranch(ctx: Context): void {
       + 'generate several possible directions, save them with action="upsert", '
       + 'then let the writer pick. Saved branches are not lost even if unused.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
       title: { type: 'string', description: 'Branch title. REQUIRED for upsert.' },
       description: { type: 'string', description: 'What happens in this branch (upsert).' },
@@ -368,7 +369,7 @@ function registerBranch(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryBranches(args.workToken, {
+        const items = await queryBranches(resolveWorkToken(args), {
           ...args.adoptStatus === undefined ? {} : { adoptStatus: args.adoptStatus },
         }, exec.signal)
         return { action: 'query', total: items.length, items }
@@ -376,7 +377,7 @@ function registerBranch(ctx: Context): void {
       if (args.title === undefined || args.title === '') {
         throw new Error('upsert 必须提供 title（分支标题）。')
       }
-      const r = await upsertBranch(args.workToken, {
+      const r = await upsertBranch(resolveWorkToken(args), {
         title: args.title,
         ...args.description === undefined ? {} : { description: args.description },
         ...args.adoptStatus === undefined ? {} : { adoptStatus: args.adoptStatus },

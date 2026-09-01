@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import {
   chapterHistory, listScenes, resolveChapterDoc, reviseChapter,
 } from '../domain/revision.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册改稿相关工具。 */
 export function registerRevisionTools(ctx: Context): void {
@@ -34,7 +35,7 @@ function registerReviseChapter(ctx: Context): void {
       + 'For patch, provide "match" with the exact original text. '
       + 'Every revision is versioned in Feishu and can be reviewed later.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       action: {
         type: 'string', enum: ['replace', 'expand', 'patch'], required: true,
@@ -82,7 +83,7 @@ function registerReviseChapter(ctx: Context): void {
     },
     async execute(args, exec) {
       const result = await reviseChapter(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         {
           content: args.content,
@@ -111,7 +112,7 @@ function registerListScenes(ctx: Context): void {
     description: 'List the scene headings (## sections) of a chapter with their block ids. '
       + 'Call this before novel_revise_chapter when you are unsure of the exact scene name.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
     },
     output: {
@@ -136,7 +137,7 @@ function registerListScenes(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const { docToken } = await resolveChapterDoc(args.workToken, args.chapterNo, exec.signal)
+      const { docToken } = await resolveChapterDoc(resolveWorkToken(args), args.chapterNo, exec.signal)
       const scenes = await listScenes(docToken, exec.signal)
       return {
         chapterNo: args.chapterNo,
@@ -156,7 +157,7 @@ function registerHistory(ctx: Context): void {
     description: 'List the version history of a chapter. Every write, append and revision '
       + 'creates a version, so this is how you review what an AI changed and when.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       pageSize: { type: 'number', description: 'Number of versions to return. Default 20.' },
     },
@@ -183,7 +184,7 @@ function registerHistory(ctx: Context): void {
     },
     async execute(args, exec) {
       const r = await chapterHistory(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         args.pageSize ?? 20,
         exec.signal,

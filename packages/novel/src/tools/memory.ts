@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import {
   recordCharacterState, recordEvent, updateChapterSummary, upsertBookSummary,
 } from '../domain/memory.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册记忆相关工具。 */
 export function registerMemoryTools(ctx: Context): void {
@@ -30,7 +31,7 @@ function registerUpdateSummary(ctx: Context): void {
       + 'CALL THIS AFTER FINISHING A CHAPTER — without it, later chapters cannot recall '
       + 'what happened here. Fill as many structured fields as you can.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       scene: { type: 'string', description: 'When and where this chapter takes place.' },
       events: {
@@ -65,7 +66,7 @@ function registerUpdateSummary(ctx: Context): void {
     },
     async execute(args, exec) {
       const r = await updateChapterSummary(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         {
           ...args.scene === undefined ? {} : { scene: args.scene },
@@ -90,7 +91,7 @@ function registerCharacterState(ctx: Context): void {
       + '(location, injuries, mood, belongings). This is what lets later chapters know '
       + 'where the character is and what condition they are in.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       character: { type: 'string', required: true, description: 'Character name' },
       location: { type: 'string', description: 'Where they are at chapter end.' },
@@ -112,7 +113,7 @@ function registerCharacterState(ctx: Context): void {
     },
     async execute(args, exec) {
       const r = await recordCharacterState(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         {
           character: args.character,
@@ -137,7 +138,7 @@ function registerRecordEvent(ctx: Context): void {
       + 'Events are the fine-grained memory that chapter summaries summarize; '
       + 'they also power timeline and presence consistency checks.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       name: { type: 'string', required: true, description: 'Event name' },
       summary: { type: 'string', description: 'What happened.' },
@@ -162,7 +163,7 @@ function registerRecordEvent(ctx: Context): void {
     },
     async execute(args, exec) {
       return recordEvent(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         {
           name: args.name,
@@ -186,7 +187,7 @@ function registerBookSummary(ctx: Context): void {
       + 'These are the compressed long-term memory: they keep the context cost flat '
       + 'as the story grows to hundreds of chapters.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       level: { type: 'string', enum: ['卷', '全书'], required: true, description: 'Summary level' },
       title: { type: 'string', required: true, description: 'Summary title, e.g. "第一卷 旧剑"' },
       content: { type: 'string', required: true, description: 'Summary text' },
@@ -205,7 +206,7 @@ function registerBookSummary(ctx: Context): void {
     },
     async execute(args, exec) {
       return upsertBookSummary(
-        args.workToken,
+        resolveWorkToken(args),
         args.level,
         args.title,
         args.content,

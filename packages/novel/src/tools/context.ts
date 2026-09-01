@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import { DEFAULT_LAYERS, buildContext } from '../context/builder.ts'
 import { getPreset } from '../genre/presets.ts'
+import { resolveWorkToken } from './defaults.ts'
 import type { PresetId } from '@unwr/schema'
 
 /** 上下文摘要，模型可见的精简投影。 */
@@ -67,7 +68,7 @@ export function registerContextTool(ctx: Context): void {
       + 'chapter summaries, book-level summaries, unresolved foreshadowing, and the active '
       + 'genre preset. Call this before drafting a chapter.',
     parameters: {
-      workToken: { type: 'string', required: true, description: 'Feishu base_token of the work' },
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number to draft' },
       presetId: {
         type: 'string',
@@ -135,7 +136,7 @@ export function registerContextTool(ctx: Context): void {
     async execute(args, exec) {
       const preset = getPreset((args.presetId ?? 'webnovel') as PresetId)
       const built = await buildContext(
-        args.workToken,
+        resolveWorkToken(args),
         args.chapterNo,
         preset,
         DEFAULT_LAYERS,
