@@ -20,7 +20,8 @@ import {
 import type { ChapterStatus } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import { extractDocToken } from '../context/builder.ts'
-import { resolveChapterMount } from './organize.ts'
+import { resolveChapterMount, findVolumeRecordId } from './organize.ts'
+import { createRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
  * 待写入的字段集合。
@@ -217,12 +218,15 @@ export async function writeChapter(
     [CHAPTER_F.STATUS]: [params.status ?? CHAPTER_STATUS.DRAFT],
     [CHAPTER_F.DOC_URL]: doc.url,
   }
-  // 「所属卷」是 link 字段：必须传 [{id}] 关联格式，传字符串会报
-  // 800030201 not_found。volumeRecordId 由 resolveChapterMount 提供
-  // （卷节点创建场景直接用 createRecords 返回值，规避可见性延迟）。
-  if (mount.volumeRecordId !== undefined) {
-    fields[CHAPTER_F.VOLUME] = [{ id: mount.volumeRecordId }]
-  } else if (params.volume !== undefined) {
+  // 「所属卷」是 link 字段：必须传 [{id}] 关联格式。
+  // **不能在首次 createRecords 时写入**：卷记录可能也是刚创建的（本流程
+  // 自动建卷的场景），而 link 指向的**目标记录**同样有可见性延迟——
+  // 目标不可见时报 not_found。因此先建章节、等卷记录可见后再回填 link。
+  const pendingVolumeLink =
+    mount.volumeRecordId !== undefined && params.volume !== undefined
+      ? { volume: params.volume, recordId: mount.volumeRecordId }
+      : undefined
+  if (pendingVolumeLink === undefined && params.volume !== undefined) {
     warnings.push(`「${params.volume}」的卷记录不可用，「所属卷」未关联。`)
   }
   if (params.outline !== undefined) fields[CHAPTER_F.OUTLINE] = params.outline
@@ -239,6 +243,27 @@ export async function writeChapter(
   const recordId = recordIds[0]
   if (recordId === undefined) {
     throw new Error('章节记录创建失败：未返回 record_id')
+  }
+
+  // 回填「所属卷」link（等卷记录可见后）
+  if (pendingVolumeLink !== undefined) {
+    const linked = await awaitVisible(
+      async () =>
+        (await findVolumeRecordId(baseToken, pendingVolumeLink.volume, signal))
+        === pendingVolumeLink.recordId,
+      signal,
+      () => {},
+    )
+    if (linked) {
+      await base.updateRecords(
+        baseToken,
+        TABLE.CHAPTER,
+        { [recordId]: { [CHAPTER_F.VOLUME]: [{ id: pendingVolumeLink.recordId }] } },
+        signal,
+      )
+    } else {
+      warnings.push(`「${pendingVolumeLink.volume}」的卷记录迟迟不可见，「所属卷」未关联。`)
+    }
   }
 
   // 等待记录可被查询命中，再做后续操作。
@@ -298,33 +323,6 @@ export async function awaitVisible(
     + '短时间内按字段查询可能检测不到它。',
   )
   return false
-}
-
-/**
- * 写入记录，遇 800030201 not_found 时自愈重试。
- *
- * 背景：新建作品库的 link 字段（所属卷等）收敛是**分钟级**的
- * （实测：create 后 47s 内 4 轮重试仍失败，10 分钟后一次成功）。
- * 在工具里死等不现实，改为「撞到再补」：报 not_found → initWork
- * 幂等补齐 → 重试一次。若仍失败则抛出真实错误。
- */
-async function createRecordsWithSelfHeal(
-  baseToken: string,
-  table: string,
-  records: readonly Record<string, CellValue>[],
-  signal: AbortSignal | undefined,
-  onHeal: (message: string) => void,
-): Promise<string[]> {
-  const { FeishuError } = await import('@unwr/feishu')
-  try {
-    return await base.createRecords(baseToken, table, records, signal)
-  } catch (e) {
-    if (!(e instanceof FeishuError) || e.code !== 800030201) throw e
-    onHeal('检测到字段缺失（新库字段收敛中），正在自动补齐后重试……')
-    const { initWork } = await import('./bootstrap.ts')
-    await initWork(baseToken, signal)
-    return await base.createRecords(baseToken, table, records, signal)
-  }
 }
 
 /** 读取一章正文。 */

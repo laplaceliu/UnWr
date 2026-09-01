@@ -74,7 +74,13 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: CHARACTER_F.NAME, type: 'text' },
     { name: CHARACTER_F.ALIAS, type: 'text' },
     { name: CHARACTER_F.ROLE, type: 'text' },
-    { name: CHARACTER_F.TRAITS, type: 'select', multiple: true },
+    // select 必须预置 options：写未预置的选项报 800030005 not_found（实测）。
+    // 这里给一组常用性格标签；不够用时用户在飞书表中补充。
+    { name: CHARACTER_F.TRAITS, type: 'select', multiple: true, options: [
+      { name: '外冷内热' }, { name: '隐忍' }, { name: '偏执' }, { name: '果断' },
+      { name: '多疑' }, { name: '温柔' }, { name: '暴烈' }, { name: '缜密' },
+      { name: '狡黠' }, { name: '豁达' }, { name: '自卑' }, { name: '傲慢' },
+    ] },
     { name: CHARACTER_F.CATCHPHRASE, type: 'text' },
     { name: CHARACTER_F.MOTIVE, type: 'text' },
     { name: CHARACTER_F.APPEARANCE, type: 'text' },

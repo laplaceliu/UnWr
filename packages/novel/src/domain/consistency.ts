@@ -437,7 +437,13 @@ export async function persistIssues(
 /* 内部工具                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 安全查询：失败时记录到 skipped 并返回空数组。 */
+/**
+ * 安全查询：**仅当表不存在**时降级为空（可选表缺席是正常形态），
+ * 其他错误（字段收敛中的 not_found、限流等）一律抛出。
+ *
+ * 曾用 `catch {}` 吞掉一切：一致性检查在伏笔表查询失败时静默返回空，
+ * 「未回收伏笔」检查无声失效——与冲突检测失效同类事故。
+ */
 async function safeList(
   baseToken: string,
   tableName: string,
@@ -456,7 +462,9 @@ async function safeList(
     )
     checked?.push(tableName)
     return rows
-  } catch {
+  } catch (e) {
+    const isTableMissing = e instanceof Error && /not found/i.test(e.message)
+    if (!isTableMissing) throw e
     skipped?.push(tableName)
     return []
   }

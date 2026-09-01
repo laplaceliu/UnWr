@@ -91,6 +91,7 @@ export function registerWorkTools(ctx: Context): void {
               mode: { type: 'string' },
               pov: { type: 'string' },
               currentChapter: { type: 'number' },
+              folderUrl: { type: 'string' },
               recordId: { type: 'string' },
               updated: { type: 'boolean' },
             },

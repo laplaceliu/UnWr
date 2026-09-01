@@ -8,6 +8,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest'
+import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import { maxChapterNo } from '../src/domain/chapter.ts'
 
@@ -65,6 +66,7 @@ describe.skipIf(!HAS_BASE)('端到端：真实飞书改稿', () => {
 
   beforeAll(async () => {
     if (!HAS_BASE) return
+    await waitForBaseReady(TEST_BASE !== '' ? TEST_BASE : baseToken)
     chapterNo = await maxChapterNo(TEST_BASE) + 200 + Math.floor(Math.random() * 50)
   })
 

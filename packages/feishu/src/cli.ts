@@ -162,9 +162,10 @@ async function runOnce<T>(
     })
   })
 
-  // 有些命令（如 wiki +node-create）会在 JSON 前打印人类可读的进度行，
-  // 因此从最后一个 '{' 处开始解析，而不是假设 stdout 只有 JSON。
-  const parsed = parseEnvelope<T>(stdout)
+  // 解析响应信封。stdout 与 stderr 都要试：实测 lark-cli 对部分错误
+  // （如 Base 被删除后的 API 错误）会把 pretty JSON 打到 stderr 而非 stdout，
+  // 只解析 stdout 会把这些错误误报为「无法解析输出」，掩盖真实原因。
+  const parsed = parseEnvelope<T>(stdout) ?? parseEnvelope<T>(stderr)
   if (parsed === undefined) {
     const detail = stderr.trim() !== '' ? stderr.trim() : stdout.trim()
     throw new FeishuError(

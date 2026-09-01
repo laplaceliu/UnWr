@@ -11,6 +11,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest'
+import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import { maxChapterNo } from '../src/domain/chapter.ts'
 import { drive } from '@unwr/feishu'
@@ -48,6 +49,7 @@ describe.skipIf(!HAS_BASE)('端到端：文件夹归位', () => {
 
   beforeAll(async () => {
     if (!HAS_BASE) return
+    await waitForBaseReady(TEST_BASE !== '' ? TEST_BASE : baseToken)
     chapterNo = await maxChapterNo(TEST_BASE) + 600 + Math.floor(Math.random() * 50)
   })
 

@@ -7,7 +7,8 @@
  * @module
  */
 
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import {
   checkForeshadows, checkPresence, checkTimeline,
@@ -239,6 +240,12 @@ describe('检查工具注册', () => {
 describe.skipIf(!HAS_BASE)('端到端：真实飞书', () => {
   const tools = collectTools()
 
+  beforeAll(async () => {
+    if (!HAS_BASE) return
+    // 新建库收敛为分钟级：不等待则伏笔表查询/写入会间歇性 not_found
+    await waitForBaseReady(TEST_BASE)
+  })
+
   const run = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const tool = tools.get(name)
     if (tool === undefined) throw new Error(`工具 ${name} 未注册`)
@@ -267,9 +274,31 @@ describe.skipIf(!HAS_BASE)('端到端：真实飞书', () => {
   })
 
   it('未回收伏笔能被真实检出', async () => {
+    // **不依赖库里的历史数据**：seed 一条必逾期伏笔，并挂上「埋设章节」link——
+    // 检查逻辑需要埋设章节来估算回收期限（无 link 的伏笔无法判断，会跳过）
+    const content = `[测试] 必逾期伏笔-${Date.now().toString(36)}`
+    const seeded = await run('novel_manage_foreshadow', {
+      action: 'upsert', content, type: '主线', status: '已埋设', importance: 5,
+    })
+    // 用 base 层直接挂 link（manage_foreshadow 暂不支持 link 参数）
+    const { base } = await import('@unwr/feishu')
+    const { FORESHADOW_F, TABLE } = await import('@unwr/schema')
+    const chapters = base.matrixToObjects(
+      await base.listRecords(TEST_BASE, TABLE.CHAPTER, {
+        fieldIds: ['章节号'], limit: 1,
+      }),
+    )
+    const chapterRecordId = chapters[0]?.['__recordId']
+    if (typeof chapterRecordId === 'string') {
+      await base.updateRecords(TEST_BASE, TABLE.FORESHADOW, {
+        [String(seeded.recordId)]: { [FORESHADOW_F.PLANT_CHAPTER]: [{ id: chapterRecordId }] },
+      })
+      // link 的 update 同样有读一致性延迟，立即检查会读到 null
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+
     const r = await run('novel_run_consistency_check', { currentChapterNo: 999, persist: false })
     const issues = r.issues as { type: string; title: string }[]
-    // 测试库有 3 条已埋设伏笔，当前进度远超回收窗口时应被检出
     expect(issues.some((i) => i.type === '伏笔未回收')).toBe(true)
   })
 

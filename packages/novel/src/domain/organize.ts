@@ -107,7 +107,7 @@ async function saveVolumeFolder(
 }
 
 /** 查卷表记录 ID（章节表 link 写入用）。 */
-async function findVolumeRecordId(
+export async function findVolumeRecordId(
   baseToken: string,
   volumeName: string,
   signal?: AbortSignal,

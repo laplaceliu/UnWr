@@ -18,6 +18,7 @@ import {
   SETTING_F, TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
+import { createRecordsWithSelfHeal } from './selfheal.ts'
 
 /** 可写入的字段集合（可变，便于逐字段赋值）。 */
 type Fields = Record<string, CellValue>
@@ -67,7 +68,9 @@ async function upsert(
     return { recordId: existing, updated: true, warnings }
   }
 
-  const ids = await base.createRecords(baseToken, table, [fields], signal)
+  const ids = await createRecordsWithSelfHeal(baseToken, table, [fields], signal, (msg) => {
+    warnings.push(msg)
+  })
   const recordId = ids[0]
   if (recordId === undefined) {
     throw new Error(`${table} 记录创建失败：未返回 record_id`)
