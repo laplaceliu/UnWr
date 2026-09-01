@@ -9,12 +9,15 @@
 
 | 项 | 值 |
 |----|-----|
-| CLI | `lark-cli` v1.0.92（`<user-home>/.nvm/versions/node/v24.20.0/bin/lark-cli`） |
-| 身份 | `--as user` 通过（`bot_identity` / `user_identity` 双就绪，owner <author>） |
-| 测试作品库 | `<TEST_BASE>`（UnWr-验证-测试作品库） |
-| 测试知识空间 | `<TEST_SPACE>`（LAP学了啥？） |
-| 测试章节文档 | `Sa53dbxujoQ7NPxFX5sckqhHnOe`（结构化章节）、`MNH5dhm7WolzVZxcNn1cjDahnCd`（改写测试） |
-| 测试 Markdown 文件 | `QcNBbM9WhoPKIQxWprlcA1gnnRg`（验证-第一章.md） |
+| CLI | `lark-cli` v1.0.92（`which lark-cli` 可得路径） |
+| 身份 | `--as user` 通过（`bot_identity` / `user_identity` 双就绪） |
+| 测试作品库 | `<TEST_BASE>`（示例库，见 `.env.example`） |
+| 测试知识空间 | `<TEST_SPACE>`（示例空间，见 `.env.example`） |
+| 测试章节文档 | 由本文档的验证步骤动态创建 |
+| 测试 Markdown 文件 | 由本文档的验证步骤动态创建 |
+
+> 验证用的飞书资源 token 属个人资源标识，统一经 `UNWR_TEST_BASE` /
+> `UNWR_TEST_SPACE` 环境变量传入，见 `.env.example`。
 
 **验证状态标记**
 

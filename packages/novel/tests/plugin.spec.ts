@@ -33,7 +33,13 @@ function fakeContext(): { ctx: unknown; registered: MinimalTool[] } {
   return { ctx, registered }
 }
 
-const TEST_BASE = process.env.UNWR_TEST_BASE ?? '<TEST_BASE>'
+/**
+ * 测试用作品库。**不内置任何默认 token**——那会是个人资源标识，
+ * 且对其他人无效。未设置时端到端用例自动跳过，其余用例照常运行。
+ * 取值方式见 .env.example。
+ */
+const TEST_BASE = process.env.UNWR_TEST_BASE ?? ''
+const HAS_TEST_BASE = TEST_BASE !== ''
 
 describe('@unwr/novel plugin', () => {
   it('导出符合 Cordis 插件约定', () => {
@@ -74,7 +80,8 @@ describe('@unwr/novel plugin', () => {
     expect(/^[A-Za-z0-9_-]{1,64}$/.test(tool?.name ?? '')).toBe(true)
   })
 
-  it(
+  // 未配置测试库时跳过，而非失败——其余用例不受影响
+  it.skipIf(!HAS_TEST_BASE)(
     '端到端：从真实飞书测试库组装第 4 章上下文',
     { timeout: 60_000 },
     async () => {
@@ -92,10 +99,9 @@ describe('@unwr/novel plugin', () => {
       // 写作指引必须渲染出来（题材配置生效）
       expect(typeof result.writingGuide).toBe('string')
       expect(result.writingGuide as string).toContain('中文网文')
-      // 未回收伏笔应能取到（测试库里有 3 条）
-      expect(Array.isArray(result.openForeshadows)).toBe(true)
-      expect((result.openForeshadows as unknown[]).length).toBeGreaterThan(0)
       expect(typeof result.estimatedTokens).toBe('number')
+      // openForeshadows 依赖测试库实际数据，只校验类型
+      expect(Array.isArray(result.openForeshadows)).toBe(true)
     },
   )
 })

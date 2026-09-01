@@ -9,9 +9,19 @@
 import { CHAPTER_F, FORESHADOW_F, TABLE } from '@unwr/schema'
 import { base, docs, wiki } from '../src/index.ts'
 
-/** 需求阶段创建的测试库。 */
-const BASE = process.env.UNWR_TEST_BASE ?? '<TEST_BASE>'
-const SPACE = process.env.UNWR_TEST_SPACE ?? '<TEST_SPACE>'
+/**
+ * 测试用的飞书作品库与知识空间。
+ * **不内置默认 token**——那是个人资源标识，对其他人无效。
+ * 请先按 .env.example 设置 UNWR_TEST_BASE / UNWR_TEST_SPACE。
+ */
+const BASE = process.env.UNWR_TEST_BASE ?? ''
+const SPACE = process.env.UNWR_TEST_SPACE ?? ''
+
+if (BASE === '') {
+  console.error('未设置 UNWR_TEST_BASE，无法运行冒烟测试。')
+  console.error('请先创建测试作品库，并参考 .env.example 设置环境变量。')
+  process.exit(1)
+}
 
 const log = (ok: boolean, msg: string, ms?: number): void => {
   console.log(`${ok ? '✓' : '✗'} ${msg}${ms === undefined ? '' : ` (${ms}ms)`}`)

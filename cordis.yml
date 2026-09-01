@@ -1,13 +1,24 @@
-# UnWr —— Unlimited Writing 的 DSH 插件配置层。
+# UnWr —— Unlimited Writing 的 DSH 插件配置层（源码版开发用）。
 #
-# 开发期用法（在 dsh 仓库目录下执行）：
-#   cd <user-home>/Source/github.com/dsh
-#   pnpm dsh web --patch <user-home>/Source/github.com/laplaceliu/UnWr/cordis.yml
+# 适用：从 DSH **源码**启动（可直接加载 .ts）。
+# 若你用的是 npx 安装版 DSH，它不含 tsx，需改用打包后的 bundle：
+#   pnpm build   →  dist/unwr-novel.mjs
+# 配置方式见 README「在 DSH 中运行」。
 #
-# 加载顺序（后应用的层胜出，且替换整个 config 而非深度合并）：
-#   profile.bundles → profile patch → $DSH_HOME/cordis.patch.yml → --patch overlay
+# 用法：
+#   cd <dsh-source>
+#   pnpm dsh web --patch <unwr>/cordis.yml --port 3082
 #
-# 注意：插件路径必须是绝对路径（patch 文件只贡献配置，不改变 loader 的模块解析基目录）。
+# ── 路径说明 ──────────────────────────────────────────────
+# DSH 要求插件 name 必须是**绝对路径**，且 patch 文件不改变 loader 的
+# 模块解析基目录。为避免把个人目录写进仓库，这里用 `!!js` 表达式
+# 从环境变量拼接。
+#
+# 使用前设置（建议写入你的 shell 配置，勿提交）：
+#   export UNWR_ROOT=/path/to/UnWr
+#
+# 若未设置 UNWR_ROOT，本文件会加载失败并提示——不会静默用错路径。
+# ──────────────────────────────────────────────────────────
 
 - insert:
     # 小说领域工具层：注册 novel_* 工具。
@@ -15,11 +26,15 @@
     # 注意：@unwr/feishu 是**纯库**而非插件（无 apply，不注册进 cordis 树），
     # 由 @unwr/novel 直接 import。实机验证发现：强行把纯 re-export 模块注册为
     # 插件会报 "expect function or object with an apply method"。
-    # 技术选型 ADR-5 原计划做成类形式 Service，当前阶段作为库更简洁——
-    # 临时文件清理已由 withTempDir 的 finally 保证，无需 Cordis 生命周期。
-    # 若将来需要配置热替换再升级为 Service。
     - id: unwr-novel
-      name: <user-home>/Source/github.com/laplaceliu/UnWr/packages/novel/src/index.ts
+      name: !!js |
+        (() => {
+          const root = process.env.UNWR_ROOT
+          if (!root) throw new Error('[unwr] 请设置环境变量 UNWR_ROOT 指向 UnWr 仓库根目录')
+          return root + '/packages/novel/src/index.ts'
+        })()
       config:
         # 安全模式：不注册任何删除类工具
         readOnlySafeMode: true
+        # 加载时向 stderr 打印已注册工具清单
+        verbose: true

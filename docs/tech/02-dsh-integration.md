@@ -9,7 +9,7 @@
 
 | 环境 | 位置 | 版本 | 能否加载 `.ts` 插件 |
 |------|------|------|-------------------|
-| **源码版** | `<user-home>/Source/github.com/dsh` | 0.1.2-alpha.3 | ✅ 用 `tsx` 启动即可 |
+| **源码版** | 你 clone 的 `deepseek-harness` 目录 | 0.1.2-alpha.3 | ✅ 用 `tsx` 启动即可 |
 | **npx 版** | `~/.npm/_npx/<hash>/node_modules/@deepseek-ai/dsh` | 0.1.1-rc.2 | ❌ **不含 tsx** |
 
 **关键差异**：npx 版是编译后的 dist，**不含 tsx**，无法直接加载 `.ts` 源码插件。

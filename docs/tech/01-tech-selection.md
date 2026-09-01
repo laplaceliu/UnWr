@@ -390,7 +390,7 @@ UnWr/
 |----|------|
 | `lark-cli` | v1.0.92（已装，`@larksuite/cli`） |
 | Node.js | ^22.19 或 >=24（当前 v24.20.0 ✅） |
-| 飞书认证 | 已配置：`<user-home>/.lark-cli/config.json`，user token 就绪 |
+| 飞书认证 | 已配置：`~/.lark-cli/config.json`，user token 就绪 |
 
 > **注意**：**不引入** `@larksuiteoapi/node-sdk`。见 ADR-1。
 
@@ -401,11 +401,11 @@ UnWr/
 | 项 | 状态 | 说明 |
 |----|------|------|
 | Node.js v24.20.0 | ✅ | DSH 要求 ^22.19 或 >=24 |
-| pnpm v11.18.0 | ✅ | DSH 文档指定 11.7.0，本机 11.18.0（`<user-home>/.bun/bin/pnpm`），同 major 版本应兼容 |
+| pnpm v11.18.0 | ✅ | DSH 文档指定 11.7.0，实测 11.18.0 可用，同 major 版本应兼容 |
 | `lark-cli` v1.0.92 | ✅ | Go 二进制，仅可 spawn |
 | 飞书 user 身份 | ✅ | `lark-cli doctor` 双身份就绪 |
-| 测试作品库 | ✅ | `<TEST_BASE>` |
-| 测试知识空间 | ✅ | `<TEST_SPACE>` |
+| 测试作品库 | ✅ | 经 `UNWR_TEST_BASE` 传入，见 `.env.example` |
+| 测试知识空间 | ✅ | 经 `UNWR_TEST_SPACE` 传入，见 `.env.example` |
 | **DSH 源码** | ❌ **未安装** | 全盘搜索未找到；需 `git clone https://github.com/deepseek-ai/deepseek-harness.git` |
 
 ---
@@ -432,4 +432,4 @@ UnWr/
 3. **实现 `novel_build_context`**：这是最高价值工具，内部并行拉取，先跑通它即验证了架构
 4. **逐个补齐 22 个工具**：按 MVP 优先级（见 `01-features-and-verification.md` 第五节）
 
-**验证标准**：每个工具用测试库 `<TEST_BASE>` 实机跑通，与需求阶段验证方式一致。
+**验证标准**：每个工具用测试库（经 `UNWR_TEST_BASE` 指定）实机跑通，与需求阶段验证方式一致。

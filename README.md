@@ -47,8 +47,15 @@ packages/
 
 - Node.js v24（DSH 要求 ^22.19 或 >=24）
 - pnpm 11.7+
-- `lark-cli` v1.0.92（飞书认证已配置于 `~/.lark-cli/config.json`）
-- DSH 源码：`<user-home>/Source/github.com/dsh`
+- `lark-cli` v1.0.92（飞书认证配置于 `~/.lark-cli/config.json`）
+- DSH：源码版或 npx 版均可
+
+设置 DSH 源码位置（若与 UnWr 不在同级目录）：
+
+```bash
+export UNWR_ROOT=/path/to/UnWr          # cordis.yml 用它定位插件
+pnpm setup:dsh /path/to/deepseek-harness # 重新指向 DSH 源码（可选）
+```
 
 ### 常用命令
 
@@ -79,8 +86,17 @@ pnpm build              # 产出 dist/unwr-novel.mjs
 pnpm build:watch        # 开发期热重建
 
 # 2. 挂载到 profile 的用户层 patch
-#    已配置：~/.dsh/profiles/web/cordis.patch.yml
-#    内容指向 <user-home>/Source/github.com/laplaceliu/UnWr/dist/unwr-novel.mjs
+#    写入 ~/.dsh/profiles/<profile>/cordis.patch.yml：
+#
+#    - insert:
+#        - id: unwr-novel
+#          name: <UNWR_ROOT>/dist/unwr-novel.mjs   # 必须绝对路径
+#          config:
+#            readOnlySafeMode: true
+#            verbose: true
+#
+#    DSH 要求 name 为绝对路径，故该文件需填你的实际路径；
+#    它在 ~/.dsh 下（不入 git），不会外泄。
 
 # 3. 验证配置层被解析
 dsh --profile web --dump-config | grep -A3 unwr
@@ -96,9 +112,11 @@ npx @deepseek-ai/dsh web      # 端口 3080
 **源码版 DSH**（可加载 `.ts`，适合开发）：
 
 ```bash
-cd <user-home>/Source/github.com/dsh
+export UNWR_ROOT=/path/to/UnWr   # cordis.yml 用此变量拼接插件路径
+
+cd /path/to/deepseek-harness
 node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
-  --patch <user-home>/Source/github.com/laplaceliu/UnWr/cordis.yml
+  --patch $UNWR_ROOT/cordis.yml
 ```
 
 ## 已实现的工具
