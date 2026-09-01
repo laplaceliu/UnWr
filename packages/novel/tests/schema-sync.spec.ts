@@ -23,7 +23,11 @@ interface MinimalTool {
 
 function collectTools(): Map<string, MinimalTool> {
   const tools = new Map<string, MinimalTool>()
-  apply({ tools: { register: (t: MinimalTool) => tools.set(t.name, t) } } as never, {})
+  apply({
+    tools: { register: (t: MinimalTool) => tools.set(t.name, t) },
+    // 插件会向主会话注入写作约定（systemPrompt.section）
+    systemPrompt: { section: () => {} },
+  } as never, {})
   return tools
 }
 

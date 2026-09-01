@@ -18,7 +18,7 @@ interface MinimalTool {
 
 function collectTools(): Map<string, MinimalTool> {
   const tools = new Map<string, MinimalTool>()
-  apply({ tools: { register: (t: MinimalTool) => tools.set(t.name, t) } } as never, {})
+  apply({ tools: { register: (t: MinimalTool) => tools.set(t.name, t) }, systemPrompt: { section: () => {} } } as never, {})
   return tools
 }
 
