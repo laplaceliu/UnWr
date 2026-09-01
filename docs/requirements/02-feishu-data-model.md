@@ -284,17 +284,28 @@
 
 ### 5.2 章节正文文档内部规范
 
+> ⚠️ **技术选型阶段实测修正**：原设计让正文首行写 `# 章标题`，
+> 但 `docs +create` 的 `--title` 会覆盖同名 h1（CLI 文档：
+> "the title wins over later content titles"）。而我们的用法恰好
+> `--title` = 章标题 = 内容首行，导致 **h1 被吞、outline 丢失章标题**。
+>
+> **修正约定：章标题由 `--title` 承担，正文只用 `##` 做场景分节。**
+
 ```
-# 第一章 雨夜叩门          ← h1，章标题
+文档标题（--title）= 第一章 雨夜叩门
+─────────────────────────────
 ## 一、入城                ← h2，场景分节 ✅
 段落…
 ## 二、交锋                ← h2
 段落…
 ```
 
+- 章标题体现为飞书文档名（便于文档列表浏览），正文不重复写 h1
 - 每个 h2 = 一个场景，便于 `outline` 导航与 `block_id` 精确定位 ✅
 - 改写一律以 **h2 场景块**为最小操作单位：`fetch --detail with-ids` → `block_replace`
 - 细粒度改动用 `str_replace`，跨段落用 `block_replace`
+- 验证方式：`docs +fetch --scope outline --doc-format xml`，
+  断言 h2 数量 === 场景数（**markdown 格式下 outline 返回 `##` 文本而非标签，不能用于断言**）
 
 ### 5.3 Drive 文件夹
 
