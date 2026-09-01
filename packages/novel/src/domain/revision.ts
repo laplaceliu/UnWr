@@ -84,13 +84,24 @@ export async function resolveChapterDoc(
   const { CHAPTER_F, TABLE } = await import('@unwr/schema')
 
   // findChapterRecord 只判断存在性，这里还需要正文链接
-  const rows = base.matrixToObjects(
-    await base.listRecords(baseToken, TABLE.CHAPTER, {
-      fieldIds: [CHAPTER_F.NO, CHAPTER_F.DOC_URL],
-      filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
-      limit: 1,
-    }, signal),
-  )
+  let rows: Record<string, unknown>[]
+  try {
+    rows = base.matrixToObjects(
+      await base.listRecords(baseToken, TABLE.CHAPTER, {
+        fieldIds: [CHAPTER_F.NO, CHAPTER_F.DOC_URL],
+        filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
+        limit: 1,
+      }, signal),
+    )
+  } catch (e) {
+    // 实测：模型会抄错 workToken（…Lhnzf 抄成 …Llnzf），Base 域报 NOTEXIST。
+    // 给出能自我纠正的提示，而不是裸的 NOTEXIST。
+    throw new Error(
+      `读取章节表失败（${e instanceof Error ? e.message : String(e)}）。`
+      + '常见原因是 workToken 抄写错误——请用 novel_manage_work(action=list) 核对正确的 base_token。',
+      { cause: e },
+    )
+  }
   const row = rows[0]
   if (row === undefined) {
     throw new Error(`第 ${chapterNo} 章不存在，无法改稿。`)
@@ -205,6 +216,30 @@ export async function reviseChapter(
   params: ReviseParams,
   signal?: AbortSignal,
 ): Promise<ReviseResult> {
+  // 入参校验：空 content 曾一路透传到 CLI，报出晦涩的
+  // "block_replace requires --content"（实测一个会话里连踩 3 次）。
+  // 在这里拦截并给出模型能自我纠正的提示。
+  if (params.content === undefined || params.content.trim() === '') {
+    throw new Error(
+      'content 不能为空——replace/expand 需要完整的新文本，patch 需要替换后的文本。'
+      + '若你只是想删除内容，请把 content 设为一个空格并说明。',
+    )
+  }
+  if (params.action === 'patch' && (params.target.match === undefined || params.target.match.trim() === '')) {
+    throw new Error('patch 需要 match（正文中要被替换的精确连续文本）。')
+  }
+  // 实测高频错误：模型把换行写成字面 \n（两个字符）。真实正文里是
+  // 换行字符，永远匹配不上。提前拦截并解释，避免一轮 CLI 往返。
+  const literalBackslashN = String.fromCharCode(92) + 'n'
+  if (params.target.match !== undefined && params.target.match.includes(literalBackslashN)) {
+    const hint = [
+      'match 里包含字面反斜杠+n（两个字符）。',
+      '正文中换行就是换行字符本身，请直接用真实换行，',
+      '且 match 必须与 novel_read_chapter 返回的文本逐字符一致。',
+    ].join('')
+    throw new Error(hint)
+  }
+
   const { base } = await import('@unwr/feishu')
   const { CHAPTER_F, CHAPTER_STATUS, TABLE } = await import('@unwr/schema')
 

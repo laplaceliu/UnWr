@@ -117,8 +117,19 @@ interface UpdateEnvelope {
   warnings?: string[]
 }
 
-/** 归一化 update 响应的两种嵌套形状。 */
+/**
+ * 归一化 update 响应的两种嵌套形状。
+ *
+ * **关键坑（实测）**：str_replace 无匹配时 CLI 返回 `ok:true` +
+ * `result:"failed"` + warnings（degrade_code=1011）——HTTP 层是成功的！
+ * 若只取 revision_id，上层会误以为改写成功。此处强制检查 result，
+ * failed 一律抛错并携带 warnings 原文（内含 degrade_code 与原因）。
+ */
 function toUpdateResult(e: UpdateEnvelope): UpdateResult {
+  if (e.result === 'failed') {
+    const detail = (e.warnings ?? []).join('; ') || '无额外信息'
+    throw new Error(`文档更新未生效（result=failed）：${detail}`)
+  }
   return {
     revision_id: e.document.revision_id,
     url: e.document.url,
@@ -158,14 +169,18 @@ export async function strReplace(
   content: string,
   signal?: AbortSignal,
 ): Promise<UpdateResult> {
-  const res = await runCli<UpdateEnvelope>(
-    ['docs', '+update', '--doc', doc,
-      '--command', 'str_replace',
-      '--pattern', pattern,
-      '--content', content],
-    { signal },
-  )
-  return toUpdateResult(res)
+  // content 走临时文件：与 blockReplace 一致，规避超长文本的 argv 风险
+  return withTempDir(async (dir) => {
+    const f = await dir.write('replace.md', content)
+    const res = await runCli<UpdateEnvelope>(
+      ['docs', '+update', '--doc', doc,
+        '--command', 'str_replace',
+        '--pattern', pattern,
+        '--content', `@${f.relative}`],
+      { cwd: dir.cwd, signal },
+    )
+    return toUpdateResult(res)
+  })
 }
 
 /**
