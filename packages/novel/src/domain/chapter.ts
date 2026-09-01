@@ -21,7 +21,7 @@ import type { ChapterStatus } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import { extractDocToken } from '../context/builder.ts'
 import { resolveChapterMount, findVolumeRecordId } from './organize.ts'
-import { createRecordsWithSelfHeal } from './selfheal.ts'
+import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
  * 待写入的字段集合。
@@ -271,7 +271,7 @@ export async function writeChapter(
       () => {},
     )
     if (linked) {
-      await base.updateRecords(
+      await updateRecordsWithSelfHeal(
         baseToken,
         TABLE.CHAPTER,
         { [recordId]: { [CHAPTER_F.VOLUME]: [{ id: pendingVolumeLink.recordId }] } },

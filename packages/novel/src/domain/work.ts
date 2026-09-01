@@ -13,6 +13,8 @@ import { WORK_F } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import type { GenrePreset } from '@unwr/schema'
 import { getPreset } from '../genre/presets.ts'
+import { createRecordsWithSelfHeal } from './selfheal.ts'
+import { awaitVisible } from './chapter.ts'
 
 /** 一部作品的摘要信息。 */
 export interface WorkSummary {
@@ -193,9 +195,27 @@ export async function updateWorkConfig(
     return { recordId, updated: true }
   }
 
-  const ids = await base.createRecords(baseToken, '作品表', [fields], signal)
+  const ids = await createRecordsWithSelfHeal(baseToken, '作品表', [fields], signal, () => {})
   const created = ids[0]
   if (created === undefined) throw new Error('作品配置创建失败：未返回 record_id')
+  // 首条作品配置必须「返回即可读」：get_config 紧随 create 是高频路径
+  // （实测不等待会读到空记录，name/subgenre 全空）。按 NAME 轮询确认。
+  await awaitVisible(
+    async () => {
+      try {
+        const rows = base.matrixToObjects(
+          await base.listRecords(baseToken, '作品表', {
+            fieldIds: [WORK_F.NAME], limit: 1,
+          }, signal),
+        )
+        return rows[0]?.[WORK_F.NAME] === fields[WORK_F.NAME]
+      } catch {
+        return false
+      }
+    },
+    signal,
+    () => {},
+  )
   return { recordId: created, updated: false }
 }
 

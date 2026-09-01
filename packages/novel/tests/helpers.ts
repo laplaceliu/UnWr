@@ -5,14 +5,14 @@
 
 import { base } from '@unwr/feishu'
 
+const aliveCache = new Map<string, boolean>()
+
 /**
  * 解析可用的测试库 token。
  *
- * `UNWR_TEST_BASE` 指向的库**可能已被删除**（实测发生过：用户清理云盘
- * 后所有查询报 1002 note has been deleted，端到端用例一片红）。
- * 这里先探活：可查则返回 token，否则返回 ''（调用方 skipIf 跳过）。
- *
- * 结果按进程缓存——探活一次即可，不必每个用例都查。
+ * `UNWR_TEST_BASE` 指向的库可能已被删除（实测：清理云盘后所有查询报
+ * 1002 note has been deleted）。先探活：可查则返回 token，否则返回 ''
+ * （调用方 skipIf 跳过）。结果按进程缓存。
  */
 export async function resolveTestBase(): Promise<string> {
   const token = process.env.UNWR_TEST_BASE ?? ''
@@ -30,35 +30,64 @@ export async function resolveTestBase(): Promise<string> {
   return usable
 }
 
-const aliveCache = new Map<string, string>()
-
 /**
- * 等待测试库完全收敛（可查询、可写入）。
+ * 等待测试库**写路径**收敛。
  *
- * 新建 Base 的收敛是**分钟级**的（Base 可查 → 表 → link 字段 → 记录读写
- * 逐级就绪）。端到端用例在 beforeAll 调用本函数，避免在收敛窗口内
- * 间歇性 not_found。
+ * 实测：新建 Base 的收敛是分钟级且**多级**的——Base 可查 → 表 → 字段 →
+ * link 字段 → 记录可写，逐级就绪，listFields 通过不代表记录可写。
+ * 唯一可靠的判据是**实际写入一条探针记录**。
  *
- * @throws 超时仍不可用——此时应让用例失败而非静默跳过
+ * 探针写入人物表（名字带 __ 前缀便于识别，留在库里无害）。
+ *
+ * @throws 超时仍不可写——此时应让用例失败而非静默跳过
  */
 export async function waitForBaseReady(
   baseToken: string,
-  timeoutMs = 90_000,
+  timeoutMs = 120_000,
   signal?: AbortSignal,
 ): Promise<void> {
   const started = Date.now()
   for (;;) {
     try {
-      // 用人物表做探针：能列出字段即认为收敛完成
-      await base.listFields(baseToken, '人物表', signal)
+      await base.createRecords(
+        baseToken,
+        '人物表',
+        [{ 姓名: '__收敛探针__', 身份: '探针（可忽略）' }],
+        signal,
+      )
       return
     } catch (e) {
       if (Date.now() - started > timeoutMs) {
         throw new Error(
-          `测试库 ${baseToken} 在 ${timeoutMs}ms 内未收敛：${e instanceof Error ? e.message : String(e)}`,
+          `测试库 ${baseToken} 在 ${Math.round(timeoutMs / 1000)}s 内写路径未收敛：`
+          + `${e instanceof Error ? e.message : String(e)}`,
         )
       }
       await new Promise((r) => setTimeout(r, 3000))
     }
   }
+}
+
+/**
+ * 新库收敛窗口内执行飞书调用：遇 not_found 自动退避重试。
+ *
+ * 产品层已有 createRecordsWithSelfHeal 覆盖写路径；这里覆盖测试里
+ * 直连 base 的读/写调用（字段收敛期的 1254045/800030201）。
+ */
+export async function withConvergenceRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 4,
+): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastError = e
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!/not.?found|1254045|800030201/i.test(msg)) throw e
+      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 3000))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }

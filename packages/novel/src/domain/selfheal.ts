@@ -31,11 +31,47 @@ export async function createRecordsWithSelfHeal(
         { cause: e },
       )
     }
-    // 800030201 = 字段不属于该表（新库字段收敛中）→ 补齐后重试
-    if (e.code !== 800030201) throw e
-    onHeal(`检测到 ${table} 字段缺失（新库字段收敛中），自动补齐后重试……`)
+    // 800030201 = 字段不属于该表；1254045/not_found = 新库收敛期的资源不可见。
+    // 两者都用「补齐 schema + 退避重试」自愈。
+    const healable = e.code === 800030201 || e.kind === 'not_found'
+    if (!healable) throw e
+    onHeal(`写入 ${table} 遇 ${e.code ?? e.kind}（新库收敛中），自动补齐后重试……`)
+    await new Promise((r) => setTimeout(r, 2500))
     const { initWork } = await import('./bootstrap.ts')
     await initWork(baseToken, signal)
     return await base.createRecords(baseToken, table, records as never, signal)
+  }
+}
+
+/**
+ * 带自愈的记录更新（link 字段回填等场景）。
+ *
+ * 实测：新库里 link 字段刚建好就 update 也会报 not_found——
+ * 字段本身也需要收敛时间。退避重试 4 次（3s/6s/9s），期间
+ * 触发一次 initWork 幂等补齐。
+ */
+export async function updateRecordsWithSelfHeal(
+  baseToken: string,
+  table: string,
+  updates: Readonly<Record<string, Record<string, unknown>>>,
+  signal: AbortSignal | undefined,
+  onHeal?: (message: string) => void,
+): Promise<void> {
+  const { FeishuError } = await import('@unwr/feishu')
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await base.updateRecords(baseToken, table, updates as never, signal)
+      return
+    } catch (e) {
+      if (!(e instanceof FeishuError)) throw e
+      const healable = e.code === 800030201 || e.kind === 'not_found'
+      if (!healable || attempt === 4) throw e
+      onHeal?.(`${table} 更新遇 ${e.code ?? e.kind}（收敛中），重试 ${attempt}/3……`)
+      await new Promise((r) => setTimeout(r, attempt * 3000))
+      if (attempt === 2) {
+        const { initWork } = await import('./bootstrap.ts')
+        await initWork(baseToken, signal).catch(() => undefined)
+      }
+    }
   }
 }

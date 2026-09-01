@@ -50,6 +50,12 @@ function registerReviseChapter(ctx: Context): void {
         description: 'RECOMMENDED. The "## " heading of the scene to target, e.g. "二、交锋". '
           + 'Matched exactly first, then by number-stripped name, then by substring.',
       },
+      paragraph: {
+        type: 'number',
+        description: '1-based paragraph index WITHIN the scene (use novel_list_scenes / '
+          + 'novel_read_chapter to count). With scene, this locates one paragraph '
+          + 'structurally — more reliable than copying exact text for patch.',
+      },
       blockId: {
         type: 'string',
         description: 'Exact block id. Use only if you already fetched it — block ids '
@@ -72,6 +78,7 @@ function registerReviseChapter(ctx: Context): void {
           locatedBy: { type: 'string', required: true },
           blockId: { type: 'string', required: true },
           sceneTitle: { type: 'string' },
+          paragraphIndex: { type: 'number' },
           wordDelta: { type: 'number', required: true },
           revisionId: { type: 'number', required: true },
           documentId: { type: 'string', required: true },
@@ -91,6 +98,7 @@ function registerReviseChapter(ctx: Context): void {
           target: {
             ...args.blockId === undefined ? {} : { blockId: args.blockId },
             ...args.scene === undefined ? {} : { scene: args.scene },
+            ...args.paragraph === undefined ? {} : { paragraph: args.paragraph },
             ...args.match === undefined ? {} : { match: args.match },
           },
           // 默认回写字数：改稿后字数必然变化

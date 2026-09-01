@@ -463,7 +463,11 @@ async function safeList(
     checked?.push(tableName)
     return rows
   } catch (e) {
-    const isTableMissing = e instanceof Error && /not found/i.test(e.message)
+    // 「表/字段不存在」包括：表未建、新库字段收敛中的 not_found（message
+    // 可能是 "field not found" 或裸 code 1254045）。这两种都属于
+    // 可选表缺席，降级为空；其他错误（限流、认证）必须抛出。
+    const msg = e instanceof Error ? e.message : String(e)
+    const isTableMissing = /not.?found|1254045/i.test(msg)
     if (!isTableMissing) throw e
     skipped?.push(tableName)
     return []

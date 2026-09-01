@@ -310,9 +310,27 @@ export async function reviseChapter(
   let res: { revision_id: number; url: string; result: string; warnings?: string[] }
 
   if (params.action === 'patch') {
-    // patch 走精确文本替换，不需要块 id
+    // patch 走精确文本替换，不需要块 id，但先做失配预检——
+    // 直接透传 CLI 的话只有晦涩的 degrade_code，模型无法自我纠正
     if (params.target.match === undefined || params.target.match === '') {
-      throw new Error('patch 动作必须提供 target.match（要替换的原文片段）。')
+      throw new Error('patch 动作必须提供 target.match（要被替换的精确连续文本）。')
+    }
+    {
+      const full = await docs.fetchDoc(docToken, { docFormat: 'markdown' }, signal)
+      if (!full.content.includes(params.target.match)) {
+        // 失配引导：给了 scene 就列出该场景段落，否则列出场景标题
+        const hasScene = params.target.scene !== undefined && params.target.scene !== ''
+        const guide = hasScene
+          ? (await getSceneParagraphs(docToken, params.target.scene as string, signal)).paragraphs
+              .map((p) => `  ${p.index}. ${p.text.slice(0, 60)}${p.text.length > 60 ? '…' : ''}`)
+              .join('\n')
+          : (await listScenes(docToken, signal)).map((s) => `  - ${s.title}`).join('\n')
+        throw new Error(
+          'match 在正文中不存在（必须与 novel_read_chapter 返回的文本逐字符一致，含标点与换行）。'
+          + `\n${hasScene ? '该场景的段落：' : '可用场景：'}\n${guide}`
+          + '\n更稳的做法：改用 action=replace + scene + paragraph（结构化定位，无需复制原文）。',
+        )
+      }
     }
     locatedBy = 'match'
     blockId = ''

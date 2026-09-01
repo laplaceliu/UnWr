@@ -16,6 +16,7 @@ import {
   createWorkRootFolder, getWorkConfig, listWorks, updateWorkConfig,
 } from '../domain/work.ts'
 import { initWork } from '../domain/bootstrap.ts'
+import { resolveWorkToken } from './defaults.ts'
 
 /** 注册作品管理工具。 */
 export function registerWorkTools(ctx: Context): void {
@@ -118,18 +119,18 @@ export function registerWorkTools(ctx: Context): void {
         if (args.name === undefined || args.name === '') {
           throw new Error('create 需要 name（作品名）。')
         }
-        const created = await base.createBase(args.name, {}, signal)
+        // 先建作品文件夹，再把 Base 建进文件夹——
+        // 「一本小说的所有资源在一个目录下」的关键步骤（此前漏传
+        // folder-token，Base 落在根目录，与文件夹方案的设计目标相悖）
+        const workFolder = await createWorkRootFolder(args.name, signal)
+        const created = await base.createBase(args.name, { folderToken: workFolder.folderToken }, signal)
 
         // 建齐 13 张表与关联字段（静态导入即可，无需动态）
         const r = await initWork(created.base_token, signal)
 
-        // 挂接知识空间：建作品根节点，此后章节正文自动归位到 作品→卷→章 树
         // 多作品组织：每本小说一个云盘文件夹，Base 与正文都在其中
-        let folderUrl: string | undefined
-        {
-          const root = await createWorkRootFolder(args.name, signal)
-          folderUrl = root.url
-        }
+        // （workFolder 已在上方创建，Base 也建在其中）
+        const folderUrl: string | undefined = workFolder.url
 
         // 元信息 + 根节点**一次性**写入作品表。
         // 拆成两次会各自"查记录→无则创建"，而刚创建的记录有可见性延迟，
@@ -146,6 +147,9 @@ export function registerWorkTools(ctx: Context): void {
           ...folderUrl === undefined ? {} : { extraFields: { [WORK_F.FOLDER_URL]: folderUrl } },
         }, signal)
 
+        // 新建的作品立即成为会话默认——后续工具无需再抄 token
+        resolveWorkToken({ workToken: created.base_token })
+
         return {
           action: 'create',
           total: 1,
@@ -160,8 +164,12 @@ export function registerWorkTools(ctx: Context): void {
         }
       }
 
+      // get_config / update_config / link_folder 同样支持会话默认作品：
+      // create 成功后即成为默认，后续无需再抄 token（与领域工具一致）
       if (args.workToken === undefined || args.workToken === '') {
-        throw new Error(`${args.action} 需要 workToken。`)
+        const fallback = resolveWorkToken(args)
+        if (fallback === '') throw new Error(`${args.action} 需要 workToken。`)
+        args.workToken = fallback
       }
 
       // 为已有作品补挂知识空间（此前创建的作品没有根节点，正文散落根目录）
