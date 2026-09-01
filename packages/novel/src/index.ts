@@ -1,9 +1,12 @@
 /**
  * UnWr —— Unlimited Writing.
  *
- * 小说写作 AI 智能体的 DSH 工具插件。
- * 8 个写作角色（主编排官/设定官/人物官/大纲官/起草官/改稿官/评审官/救援官）
- * 通过提示词切换而非独立插件，见 docs/requirements/03-agent-matrix.md。
+ * 小说写作 AI 智能体的 DSH 工具插件：20 个 novel_* 领域工具。
+ *
+ * 多智能体编排（7 个 novel_agent_* 委托工具）**不在这里注册**——
+ * 由宿主配置层（~/.dsh/profiles/web/cordis.patch.yml）加载官方
+ * @deepseek-ai/dsh-tool-subagent 的 7 个实例实现，见该文件。
+ * spawn provider 由宿主 dsh-base 内置。
  *
  * 依赖：`inject: ['tools']`（DSH 保证 ctx.tools 就绪后才调 apply）。
  * @module @unwr/novel
@@ -17,12 +20,9 @@ import { registerConsistencyTools } from './tools/consistency.ts'
 import { registerRevisionTools } from './tools/revision.ts'
 import { registerEntityTools } from './tools/entity.ts'
 import { registerWorkTools } from './tools/work.ts'
-import { registerAgents } from './agents/index.ts'
 
 export const name = 'unwr-novel'
-// `subagents`：tool-subagent 仅在 provider 存在时挂载；
-// `systemPrompt`：官方 tool-subagent 的依赖
-export const inject = ['tools', 'subagents', 'systemPrompt']
+export const inject = ['tools']
 
 /** 插件配置。 */
 export interface Config {
@@ -30,8 +30,6 @@ export interface Config {
   readOnlySafeMode?: boolean
   /** 加载时向 stderr 打印已注册的工具清单，便于确认插件生效（默认关闭） */
   verbose?: boolean
-  /** 是否注册 7 个角色委托工具（多智能体编排）。默认开启 */
-  enableAgents?: boolean
 }
 
 /** `ctx.tools.schemas()` 的返回形状（只取我们关心的字段）。 */
@@ -53,10 +51,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerRevisionTools(ctx)
   registerEntityTools(ctx)
   registerWorkTools(ctx)
-  registerAgents(ctx, {
-    providerName: 'spawn',
-    ...config.enableAgents === false ? { enabled: false } : {},
-  })
 
   if (config.verbose === true) {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))
