@@ -80,6 +80,9 @@ export interface WorkConfig {
   mode: string
   pov: string
   currentChapter: number
+  /** 本作品在知识空间的根节点 URL（未挂空间时为空） */
+  /** 本作品的云盘根文件夹（《作品名》/）URL；未挂目录时为空 */
+  folderUrl: string
   /** 解析后的题材预设；作品表未指定时按题材名回落 */
   preset: GenrePreset
 }
@@ -95,6 +98,7 @@ export async function getWorkConfig(
         fieldIds: [
           WORK_F.NAME, WORK_F.GENRE, WORK_F.SUBGENRE, WORK_F.SCALE,
           WORK_F.TARGET_WORDS, WORK_F.MODE, WORK_F.POV, WORK_F.CURRENT_CHAPTER,
+          WORK_F.FOLDER_URL,
         ],
         limit: 1,
       }, signal),
@@ -119,8 +123,26 @@ export async function getWorkConfig(
     mode: firstStr(row[WORK_F.MODE]),
     pov: firstStr(row[WORK_F.POV]),
     currentChapter: num(row[WORK_F.CURRENT_CHAPTER]),
+    folderUrl: str(row[WORK_F.FOLDER_URL]),
     preset: getPreset(presetId),
   }
+}
+
+/**
+ * 为作品创建云盘根文件夹（《作品名》/）。
+ *
+ * **只建文件夹，不写库**——调用方（novel_manage_work create/link_folder）
+ * 负责把返回的 url 与其他元信息**一次性**写入作品表。
+ * 此前在 wiki 方案里这里同步写库，与 meta 写入分两次查询记录，
+ * 撞上写入可见性延迟会创建两条作品记录。
+ */
+export async function createWorkRootFolder(
+  workName: string,
+  signal?: AbortSignal,
+): Promise<{ folderToken: string; url: string }> {
+  const { drive } = await import('@unwr/feishu')
+  const folder = await drive.createFolder(workName, {}, signal)
+  return { folderToken: folder.folder_token, url: folder.url }
 }
 
 /** 更新作品配置（只写提供的字段）。 */
@@ -136,9 +158,11 @@ export async function updateWorkConfig(
     pov: string
     currentChapter: number
   }>,
+  // 内部调用（如 createWorkWikiRoot 写根节点）直接传字段，绕过 patch 的类型收窄
+  options: { extraFields?: Record<string, CellValue> } = {},
   signal?: AbortSignal,
 ): Promise<{ recordId: string; updated: boolean }> {
-  const fields: Record<string, CellValue> = {}
+  const fields: Record<string, CellValue> = { ...options.extraFields }
   if (patch.name !== undefined) fields[WORK_F.NAME] = patch.name
   if (patch.subgenre !== undefined) fields[WORK_F.SUBGENRE] = patch.subgenre
   if (patch.targetWords !== undefined) fields[WORK_F.TARGET_WORDS] = patch.targetWords

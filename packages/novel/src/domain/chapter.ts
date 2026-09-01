@@ -20,6 +20,7 @@ import {
 import type { ChapterStatus } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import { extractDocToken } from '../context/builder.ts'
+import { resolveChapterMount } from './organize.ts'
 
 /**
  * 待写入的字段集合。
@@ -195,10 +196,20 @@ export async function writeChapter(
     )
   }
 
-  // 2. 创建正文文档（章标题由 --title 承担）
-  const doc = await docs.createDoc(params.title, normalized, {}, signal)
+  // 2. 定位正文应挂载的父文件夹（多作品组织的关键，见 organize.ts 的说明）
+  const mount = await resolveChapterMount(baseToken, {
+    ...params.volume === undefined ? {} : { volume: params.volume },
+  }, signal)
+  warnings.push(...mount.warnings)
 
-  // 3. 写入章节索引
+  // 3. 创建正文文档（章标题由 --title 承担，正文放进所属卷文件夹或作品根文件夹）
+  const doc = await docs.createDoc(params.title, normalized, mount.parentToken === undefined ? {} : { parentToken: mount.parentToken }, signal)
+  if (mount.parentToken === undefined) {
+    warnings.push('作品未挂接文档目录，正文已创建在「我的文档」根目录。'
+      + '可用 novel_manage_work(action=link_folder) 为作品创建目录，此后正文自动归位。')
+  }
+
+  // 4. 写入章节索引
   const fields: MutableFields = {
     [CHAPTER_F.TITLE]: params.title,
     [CHAPTER_F.NO]: chapterNo,
@@ -206,11 +217,25 @@ export async function writeChapter(
     [CHAPTER_F.STATUS]: [params.status ?? CHAPTER_STATUS.DRAFT],
     [CHAPTER_F.DOC_URL]: doc.url,
   }
-  if (params.volume !== undefined) fields[CHAPTER_F.VOLUME] = params.volume
+  // 「所属卷」是 link 字段：必须传 [{id}] 关联格式，传字符串会报
+  // 800030201 not_found。volumeRecordId 由 resolveChapterMount 提供
+  // （卷节点创建场景直接用 createRecords 返回值，规避可见性延迟）。
+  if (mount.volumeRecordId !== undefined) {
+    fields[CHAPTER_F.VOLUME] = [{ id: mount.volumeRecordId }]
+  } else if (params.volume !== undefined) {
+    warnings.push(`「${params.volume}」的卷记录不可用，「所属卷」未关联。`)
+  }
   if (params.outline !== undefined) fields[CHAPTER_F.OUTLINE] = params.outline
   if (params.storyTime !== undefined) fields[CHAPTER_F.STORY_TIME] = params.storyTime
 
-  const recordIds = await base.createRecords(baseToken, TABLE.CHAPTER, [fields], signal)
+  // 写入章节索引。
+  // 自愈：新库的 link 字段（所属卷/出场人物/关联伏笔）可能仍在平台侧
+  // 收敛中（实测分钟级），写入会报 800030201 not_found。此时跑一次
+  // initWork 幂等补齐缺失字段后重试，让用户无感。
+  const recordIds = await createRecordsWithSelfHeal(
+    baseToken, TABLE.CHAPTER, [fields], signal,
+    (msg) => { warnings.push(msg) },
+  )
   const recordId = recordIds[0]
   if (recordId === undefined) {
     throw new Error('章节记录创建失败：未返回 record_id')
@@ -224,30 +249,6 @@ export async function writeChapter(
     (msg) => { warnings.push(msg) },
   )
 
-  // 4. 可选：创建 Wiki 节点并回填 URL
-  let wikiNodeToken: string | undefined
-  if (options.spaceId !== undefined || options.parentNodeToken !== undefined) {
-    try {
-      const node = await wiki.createNode(
-        params.title,
-        {
-          ...options.spaceId === undefined ? {} : { spaceId: options.spaceId },
-          ...options.parentNodeToken === undefined ? {} : { parentNodeToken: options.parentNodeToken },
-        },
-        signal,
-      )
-      wikiNodeToken = node.node_token
-      await base.updateRecords(
-        baseToken,
-        TABLE.CHAPTER,
-        { [recordId]: { [CHAPTER_F.WIKI_URL]: node.url ?? '' } },
-        signal,
-      )
-    } catch (e) {
-      warnings.push(`Wiki 节点创建失败（正文与索引已写入成功）：${e instanceof Error ? e.message : String(e)}`)
-    }
-  }
-
   return {
     chapterNo,
     title: params.title,
@@ -255,7 +256,6 @@ export async function writeChapter(
     documentUrl: doc.url,
     recordId,
     words,
-    ...wikiNodeToken === undefined ? {} : { wikiNodeToken },
     warnings,
   }
 }
@@ -298,6 +298,33 @@ export async function awaitVisible(
     + '短时间内按字段查询可能检测不到它。',
   )
   return false
+}
+
+/**
+ * 写入记录，遇 800030201 not_found 时自愈重试。
+ *
+ * 背景：新建作品库的 link 字段（所属卷等）收敛是**分钟级**的
+ * （实测：create 后 47s 内 4 轮重试仍失败，10 分钟后一次成功）。
+ * 在工具里死等不现实，改为「撞到再补」：报 not_found → initWork
+ * 幂等补齐 → 重试一次。若仍失败则抛出真实错误。
+ */
+async function createRecordsWithSelfHeal(
+  baseToken: string,
+  table: string,
+  records: readonly Record<string, CellValue>[],
+  signal: AbortSignal | undefined,
+  onHeal: (message: string) => void,
+): Promise<string[]> {
+  const { FeishuError } = await import('@unwr/feishu')
+  try {
+    return await base.createRecords(baseToken, table, records, signal)
+  } catch (e) {
+    if (!(e instanceof FeishuError) || e.code !== 800030201) throw e
+    onHeal('检测到字段缺失（新库字段收敛中），正在自动补齐后重试……')
+    const { initWork } = await import('./bootstrap.ts')
+    await initWork(baseToken, signal)
+    return await base.createRecords(baseToken, table, records, signal)
+  }
 }
 
 /** 读取一章正文。 */

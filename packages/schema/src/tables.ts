@@ -52,7 +52,7 @@ export const CHAPTER_F = {
   CAST: '出场人物',
   FORESHADOWS: '关联伏笔',
   DOC_URL: '正文文档',
-  WIKI_URL: 'Wiki节点',
+  FOLDER_URL: '文档目录',
   STORY_TIME: '故事内时间',
   UPDATED_AT: '更新时间',
 } as const
@@ -163,7 +163,7 @@ export const VOLUME_F = {
   CHAPTER_RANGE: '起止章节',
   STATUS: '状态',
   SUMMARY: '卷摘要',
-  WIKI_URL: 'Wiki节点',
+  FOLDER_URL: '文档目录',
 } as const
 
 /** 作品表字段。 */
@@ -177,6 +177,11 @@ export const WORK_F = {
   STYLE_PRESET: '风格预设',
   POV: '叙事视角',
   CURRENT_CHAPTER: '当前进度章节',
+  /**
+   * 本作品的云盘根文件夹（《作品名》/）：Base 与全部正文都在其中，
+   * 多本小说各一个文件夹，天然隔离。
+   */
+  FOLDER_URL: '文档目录',
 } as const
 
 /** 检查问题表字段。 */

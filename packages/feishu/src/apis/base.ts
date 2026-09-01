@@ -322,7 +322,27 @@ export function createBase(
   const args = ['base', '+base-create', '--name', name]
   if (options.folderToken !== undefined) args.push('--folder-token', options.folderToken)
   args.push('--time-zone', options.timeZone ?? 'Asia/Shanghai')
-  return runCli(args, { signal })
+  return runCli<CreatedBaseEnvelope>(args, { signal }).then(unpackCreatedBase)
+}
+
+/**
+ * `base-create` 的响应比其他命令多一层 `data.base` 包裹（实测）：
+ * `{"data": {"base": {"base_token": "...", "url": "..."}, "created": true}}`
+ */
+interface CreatedBaseEnvelope {
+  base: { base_token: string; name?: string; url?: string }
+  created?: boolean
+}
+
+function unpackCreatedBase(e: CreatedBaseEnvelope): { base_token: string; name: string; url: string } {
+  if (e.base?.base_token === undefined) {
+    throw new Error('base-create 未返回 base_token')
+  }
+  return {
+    base_token: e.base.base_token,
+    name: e.base.name ?? '',
+    url: e.base.url ?? '',
+  }
 }
 
 /**

@@ -53,6 +53,9 @@ const RATE_LIMIT_PATTERNS = [
   /too many request/i,
   /频率/,
   /1254290/,
+  // 实测建表过快触发：800004135 "the method：OpenAPIAddTable limited"
+  /limited/i,
+  /800004135/,
 ]
 
 const PERMISSION_PATTERNS = [

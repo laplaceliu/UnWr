@@ -12,6 +12,7 @@ export * from './file-bridge.ts'
 export * as base from './apis/base.ts'
 export * as docs from './apis/docs.ts'
 export * as wiki from './apis/wiki.ts'
+export * as drive from './apis/drive.ts'
 
 export type { Identity, RunOptions } from './cli.ts'
 export type { CellValue, FieldSchema, FilterJson, RecordFields, SortJson } from './types.ts'

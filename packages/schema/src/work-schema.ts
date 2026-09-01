@@ -48,6 +48,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: WORK_F.STYLE_PRESET, type: 'text' },
     { name: WORK_F.POV, type: 'select', multiple: false, options: [{ name: '第一人称' }, { name: '第三人称限知' }, { name: '第三人称全知' }] },
     { name: WORK_F.CURRENT_CHAPTER, type: 'number' },
+    { name: WORK_F.FOLDER_URL, type: 'text', style: { type: 'url' } },
   ],
   [TABLE.VOLUME]: [
     { name: VOLUME_F.NAME, type: 'text' },
@@ -56,7 +57,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: VOLUME_F.CHAPTER_RANGE, type: 'text' },
     { name: VOLUME_F.STATUS, type: 'select', multiple: false, options: [{ name: '待写' }, { name: '进行中' }, { name: '已完成' }] },
     { name: VOLUME_F.SUMMARY, type: 'text' },
-    { name: VOLUME_F.WIKI_URL, type: 'text', style: { type: 'url' } },
+    { name: VOLUME_F.FOLDER_URL, type: 'text', style: { type: 'url' } },
   ],
   [TABLE.CHAPTER]: [
     { name: CHAPTER_F.TITLE, type: 'text' },
@@ -67,7 +68,6 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: CHAPTER_F.SUMMARY, type: 'text' },
     { name: CHAPTER_F.TENSION, type: 'number', style: { type: 'rating', icon: 'star', min: 1, max: 5 } },
     { name: CHAPTER_F.DOC_URL, type: 'text', style: { type: 'url' } },
-    { name: CHAPTER_F.WIKI_URL, type: 'text', style: { type: 'url' } },
     { name: CHAPTER_F.STORY_TIME, type: 'text' },
   ],
   [TABLE.CHARACTER]: [

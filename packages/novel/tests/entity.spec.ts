@@ -45,7 +45,7 @@ describe('工具注册', () => {
       properties?: { action?: { enum?: string[] } }
     } | undefined
     expect(params?.properties?.action?.enum).toEqual([
-      'list', 'create', 'get_config', 'update_config',
+      'list', 'create', 'get_config', 'update_config', 'link_folder',
     ])
   })
 

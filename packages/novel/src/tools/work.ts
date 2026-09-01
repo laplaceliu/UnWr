@@ -10,8 +10,11 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
-import { base } from '@unwr/feishu'
-import { getWorkConfig, listWorks, updateWorkConfig } from '../domain/work.ts'
+import { base, drive } from '@unwr/feishu'
+import { WORK_F } from '@unwr/schema'
+import {
+  createWorkRootFolder, getWorkConfig, listWorks, updateWorkConfig,
+} from '../domain/work.ts'
 import { initWork } from '../domain/bootstrap.ts'
 
 /** 注册作品管理工具。 */
@@ -26,13 +29,14 @@ export function registerWorkTools(ctx: Context): void {
     parameters: {
       action: {
         type: 'string',
-        enum: ['list', 'create', 'get_config', 'update_config'],
+        enum: ['list', 'create', 'get_config', 'update_config', 'link_folder'],
         required: true,
       },
       workToken: {
         type: 'string',
-        description: 'Base token. Required for get_config / update_config.',
+        description: 'Base token. Required for get_config / update_config / link_folder.',
       },
+
       name: { type: 'string', description: 'Work title (create / update_config).' },
       genre: {
         type: 'string', enum: ['中文网文', '类型小说', '纯文学'],
@@ -74,6 +78,8 @@ export function registerWorkTools(ctx: Context): void {
           },
           baseToken: { type: 'string' },
           url: { type: 'string' },
+          folderUrl: { type: 'string' },
+          warnings: { type: 'array', items: { type: 'string' } },
           config: {
             type: 'object', additionalProperties: false,
             properties: {
@@ -111,7 +117,17 @@ export function registerWorkTools(ctx: Context): void {
         // 建齐 13 张表与关联字段（静态导入即可，无需动态）
         const r = await initWork(created.base_token, signal)
 
-        // 写入元信息
+        // 挂接知识空间：建作品根节点，此后章节正文自动归位到 作品→卷→章 树
+        // 多作品组织：每本小说一个云盘文件夹，Base 与正文都在其中
+        let folderUrl: string | undefined
+        {
+          const root = await createWorkRootFolder(args.name, signal)
+          folderUrl = root.url
+        }
+
+        // 元信息 + 根节点**一次性**写入作品表。
+        // 拆成两次会各自"查记录→无则创建"，而刚创建的记录有可见性延迟，
+        // 第二次查不到就再建一条，导致作品表出现重复记录。
         const meta: Record<string, unknown> = { name: args.name }
         if (args.genre !== undefined) meta.genre = args.genre
         if (args.subgenre !== undefined) meta.subgenre = args.subgenre
@@ -119,7 +135,10 @@ export function registerWorkTools(ctx: Context): void {
         if (args.targetWords !== undefined) meta.targetWords = args.targetWords
         if (args.mode !== undefined) meta.mode = args.mode
         if (args.pov !== undefined) meta.pov = args.pov
-        await updateWorkConfig(created.base_token, meta, signal)
+        await updateWorkConfig(created.base_token, meta, {
+          // 根节点地址不在 patch 类型里，走 extraFields（字段常量见 WORK_F.WIKI_URL）
+          ...folderUrl === undefined ? {} : { extraFields: { [WORK_F.FOLDER_URL]: folderUrl } },
+        }, signal)
 
         return {
           action: 'create',
@@ -127,11 +146,47 @@ export function registerWorkTools(ctx: Context): void {
           works: [],
           baseToken: created.base_token,
           ...created.url === undefined ? {} : { url: created.url },
+          ...folderUrl === undefined ? {} : { folderUrl },
+          // 关联字段创建失败必须暴露——否则后续写入会报晦涩的 not_found
+          ...r.failedLinks.length === 0 ? {} : {
+            warnings: [`部分关联字段创建失败（可用 init-work 脚本重试补齐）：${r.failedLinks.join(', ')}`],
+          },
         }
       }
 
       if (args.workToken === undefined || args.workToken === '') {
         throw new Error(`${args.action} 需要 workToken。`)
+      }
+
+      // 为已有作品补挂知识空间（此前创建的作品没有根节点，正文散落根目录）
+      if (args.action === 'link_folder') {
+
+        const cfg = await getWorkConfig(args.workToken, signal)
+        // 幂等检查不能只看非空：从 wiki 方案迁移来的库，字段里存的可能是
+        // 无效的 wiki URL。必须是可解析的 folder URL 才算已挂接。
+        if (drive.extractFolderToken(cfg.folderUrl) !== undefined) {
+          return {
+            action: 'link_folder',
+            total: 1,
+            works: [],
+            baseToken: args.workToken,
+            folderUrl: cfg.folderUrl,
+            writingGuide: '该作品已挂接知识空间，无需重复挂接。',
+          }
+        }
+        const workName = cfg.name !== '' ? cfg.name : '未命名作品'
+        const root = await createWorkRootFolder(workName, signal)
+        // 已有作品的配置记录早已存在（无可见性问题），直接更新
+        await updateWorkConfig(args.workToken, {}, {
+          extraFields: { [WORK_F.FOLDER_URL]: root.url },
+        }, signal)
+        return {
+          action: 'link_folder',
+          total: 1,
+          works: [],
+          baseToken: args.workToken,
+          folderUrl: root.url,
+        }
       }
 
       if (args.action === 'get_config') {
@@ -149,6 +204,7 @@ export function registerWorkTools(ctx: Context): void {
             mode: cfg.mode,
             pov: cfg.pov,
             currentChapter: cfg.currentChapter,
+            folderUrl: cfg.folderUrl,
           },
           writingGuide: renderGuide(cfg.preset),
         }
@@ -163,7 +219,7 @@ export function registerWorkTools(ctx: Context): void {
         ...args.targetWords === undefined ? {} : { targetWords: args.targetWords },
         ...args.mode === undefined ? {} : { mode: args.mode },
         ...args.pov === undefined ? {} : { pov: args.pov },
-      }, signal)
+      }, {}, signal)
       return {
         action: 'update_config',
         total: 1,
