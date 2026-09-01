@@ -38,6 +38,8 @@
   ],
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../dsh/vendor/cordis",
-    "@deepseek-ai/dsh-tools": "link:../../dsh/packages/core/tools"
+    "@deepseek-ai/dsh-tools": "link:../../dsh/packages/core/tools",
+    "@deepseek-ai/dsh-tool-subagent": "link:../../dsh/packages/subagent/tool-subagent",
+    "@deepseek-ai/dsh-subagent-spawn-in-process": "link:../../dsh/packages/subagent/subagent-spawn-in-process"
   }
 }

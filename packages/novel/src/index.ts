@@ -17,9 +17,12 @@ import { registerConsistencyTools } from './tools/consistency.ts'
 import { registerRevisionTools } from './tools/revision.ts'
 import { registerEntityTools } from './tools/entity.ts'
 import { registerWorkTools } from './tools/work.ts'
+import { registerAgents } from './agents/index.ts'
 
 export const name = 'unwr-novel'
-export const inject = ['tools']
+// `subagents`：tool-subagent 仅在 provider 存在时挂载；
+// `systemPrompt`：官方 tool-subagent 的依赖
+export const inject = ['tools', 'subagents', 'systemPrompt']
 
 /** 插件配置。 */
 export interface Config {
@@ -27,6 +30,8 @@ export interface Config {
   readOnlySafeMode?: boolean
   /** 加载时向 stderr 打印已注册的工具清单，便于确认插件生效（默认关闭） */
   verbose?: boolean
+  /** 是否注册 7 个角色委托工具（多智能体编排）。默认开启 */
+  enableAgents?: boolean
 }
 
 /** `ctx.tools.schemas()` 的返回形状（只取我们关心的字段）。 */
@@ -48,6 +53,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerRevisionTools(ctx)
   registerEntityTools(ctx)
   registerWorkTools(ctx)
+  registerAgents(ctx, {
+    providerName: 'spawn',
+    ...config.enableAgents === false ? { enabled: false } : {},
+  })
 
   if (config.verbose === true) {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))
