@@ -223,14 +223,21 @@ export interface DocHistoryEntry {
   type?: number
 }
 
+/**
+ * `--page-size` 的实际上限。
+ * 实测：超过 20 会报 `invalid --page-size N: must be between 1 and 20`。
+ */
+export const MAX_HISTORY_PAGE_SIZE = 20
+
 /** 列出文档版本历史（改稿留痕）。 */
 export function listDocHistory(
   doc: string,
-  pageSize = 20,
+  pageSize = MAX_HISTORY_PAGE_SIZE,
   signal?: AbortSignal,
 ): Promise<{ entries: DocHistoryEntry[] }> {
+  const size = Math.min(Math.max(1, Math.trunc(pageSize)), MAX_HISTORY_PAGE_SIZE)
   return runCli(
-    ['docs', '+history-list', '--doc', doc, '--page-size', String(pageSize)],
+    ['docs', '+history-list', '--doc', doc, '--page-size', String(size)],
     { signal },
   )
 }

@@ -62,6 +62,16 @@ const PERMISSION_PATTERNS = [
   /权限/,
 ]
 
+/** 参数不合法。CLI 的典型措辞：invalid --xxx N: must be between A and B */
+const INVALID_ARG_PATTERNS = [
+  /invalid --?[a-z-]+/i,
+  /must be between/i,
+  /must be one of/i,
+  /invalid_argument/i,
+  /validation/i,
+  /参数/,
+]
+
 /** 根据错误消息与 code 推断语义分类。 */
 export function classifyError(message: string, code?: number): FeishuErrorKind {
   if (code !== undefined) {
@@ -70,6 +80,10 @@ export function classifyError(message: string, code?: number): FeishuErrorKind {
     if (code === 1254045 || code === 230002) return 'not_found'
     if (code === 99991668 || code === 91402) return 'permission'
   }
+  // 参数校验要在 not_found 之前：
+  // 「invalid --limit 500: must be between 1 and 200」含 "between"，
+  // 若先判 not_found 容易误分类
+  for (const p of INVALID_ARG_PATTERNS) if (p.test(message)) return 'invalid_argument'
   for (const p of AUTH_PATTERNS) if (p.test(message)) return 'auth'
   for (const p of RATE_LIMIT_PATTERNS) if (p.test(message)) return 'rate_limited'
   for (const p of NOT_FOUND_PATTERNS) if (p.test(message)) return 'not_found'

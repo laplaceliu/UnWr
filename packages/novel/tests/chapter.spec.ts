@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { apply } from '../src/index.ts'
-import { countWords, normalizeContent } from '../src/domain/chapter.ts'
+import { countWords, maxChapterNo, normalizeContent } from '../src/domain/chapter.ts'
 import { renderSummary } from '../src/domain/memory.ts'
 
 /** 工具定义的最小视图。 */
@@ -97,9 +97,20 @@ describe('工具注册', () => {
 describe.skipIf(!HAS_BASE)('端到端：真实飞书闭环', () => {
   const tools = collectTools()
   const baseToken = TEST_BASE
-  // 用高位章节号，避免与手工测试数据冲突
-  const chapterNo = 900 + Math.floor(Math.random() * 90)
   let createdDocId = ''
+  /**
+   * 章节号在 beforeAll 里动态分配，取「当前最大章节号 + 随机偏移」。
+   *
+   * 曾用固定随机区间（900 + random*90），但测试反复运行会留下历史记录，
+   * 随机号迟早撞上——表现为"创建章节"失败、"冲突检测"反而通过，
+   * 症状极具误导性。取当前最大值之上可保证绝不碰撞。
+   */
+  let chapterNo = 0
+
+  beforeAll(async () => {
+    if (!HAS_BASE) return
+    chapterNo = await maxChapterNo(baseToken) + 100 + Math.floor(Math.random() * 50)
+  })
 
   const run = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const tool = tools.get(name)

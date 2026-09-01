@@ -119,7 +119,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
   --patch $UNWR_ROOT/cordis.yml
 ```
 
-## 已实现的工具（10 / 22）
+## 已实现的工具（13 / 22）
 
 | 工具 | 说明 |
 |------|------|
@@ -134,8 +134,24 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
 | `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
 
-待实现（12 个）：改稿类、设定/人物/大纲管理类、卡文救援类。
+| `novel_revise_chapter` | **改稿**：按场景/块/精确文本定位，支持 replace / expand / patch |
+| `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |
+| `novel_get_chapter_history` | 章节版本历史（改稿留痕，可回溯每次改动） |
+
+待实现（9 个）：设定/人物/大纲管理类、卡文救援类。
 见 `docs/tech/01-tech-selection.md` 第四节。
+
+### 改稿的定位策略
+
+`novel_revise_chapter` 支持三种定位，推荐优先用 `scene`：
+
+| 方式 | 适用 | 稳定性 |
+|------|------|--------|
+| `scene` | **推荐**。按 `## ` 场景标题定位，如「二、交锋」 | 高——标题是内容的一部分 |
+| `blockId` | 已知确切块 id | 低——**文档结构一变就失效** |
+| `match` | 精确文本替换（patch 动作） | 取决于文本是否唯一 |
+
+场景匹配分三级：精确相等 → 剥离序号（「二、交锋」→「交锋」）→ 子串包含。
 
 ### 一致性检查的设计取舍
 
@@ -169,6 +185,13 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 14. 字段名不属于该表时报 `800030201 not_found`——以 `init-work.ts` 为单一真源，勿在飞书手工改名
 15. **link 字段读回只有 record id**（`[{id:'recXX'}]`），不含可读值；
     要拿"第几章"必须先建立 `record_id → 章节号` 映射（一致性检查踩过此坑）
+16. **Base 写入后有约 1 秒索引延迟**：实测 27 条记录时 t+668ms 查不到、t+1675ms 才查到。
+    后果：创建章节后立刻做冲突检测会误判"无冲突"，导致重复创建同一章节号。
+    `writeChapter` 已内置 `awaitVisible()` 轮询兜底
+17. 飞书会把**短时间内连续编辑聚合为一个版本**——测试不能断言"每次编辑一个版本"
+18. `--page-size` 上限 20、`--limit` 上限 200（非 ndjson 格式）
+19. 错误响应形如 `{"ok":false,"error":{...}}`，解析信封时**不能**用 `lastIndexOf('{')`
+    （会截到嵌套的 error 对象，把真实错误误报为"无法解析输出"）
 
 ## 环境变量
 

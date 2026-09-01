@@ -190,7 +190,15 @@ async function runOnce<T>(
   return parsed.data as T
 }
 
-/** 从可能混有进度行的 stdout 中提取 JSON 信封。 */
+/**
+ * 从可能混有进度行的 stdout 中提取 JSON 信封。
+ *
+ * 注意：**不能**用 `lastIndexOf('{')` —— 错误响应的结构是
+ * `{"ok":false, "error":{...}}`，最后一个 `{` 指向嵌套的 `error` 对象，
+ * 会被误当成信封本身，于是 `ok` 读不到、错误信息被当成"无法解析输出"。
+ *
+ * 正确做法：从**第一个** `{` 开始，用括号配平找到完整 JSON 边界。
+ */
 function parseEnvelope<T>(raw: string): CliEnvelope<T> | undefined {
   const trimmed = raw.trim()
   if (trimmed === '') return undefined
@@ -204,14 +212,39 @@ function parseEnvelope<T>(raw: string): CliEnvelope<T> | undefined {
     }
   }
 
-  // 慢路径：从最后一个 '{' 开始尝试（进度行在前，JSON 在后）
-  const start = trimmed.lastIndexOf('{')
-  if (start <= 0) return undefined
-  try {
-    return JSON.parse(trimmed.slice(start)) as CliEnvelope<T>
-  } catch {
-    return undefined
+  // 慢路径：命令行前面可能有进度行，从第一个 '{' 开始配平扫描
+  const start = trimmed.indexOf('{')
+  if (start < 0) return undefined
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = start; i < trimmed.length; i++) {
+    const ch = trimmed[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') { inString = true; continue }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      // 配平完成：这一段就是完整 JSON
+      if (depth === 0) {
+        const candidate = trimmed.slice(start, i + 1)
+        try {
+          return JSON.parse(candidate) as CliEnvelope<T>
+        } catch {
+          return undefined
+        }
+      }
+    }
   }
+
+  return undefined
 }
 
 /** 简单并发闸门：限制同时进行中的调用数，避免触发飞书限流。 */

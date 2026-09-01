@@ -146,25 +146,29 @@ export async function maxChapterNo(
   }
 }
 
-/** 按章节号查找已有记录 ID；不存在返回 undefined。 */
+/**
+ * 按章节号查找已有记录 ID；不存在返回 undefined。
+ *
+ * **查询失败会抛错**（而不是返回 undefined）。
+ * 曾经这里用 `catch { return undefined }` 吞掉所有错误，
+ * 后果是：查询一旦失败（限流、字段不匹配、表不存在），
+ * 冲突检测就会误判为"无冲突"，于是重复创建同一章节号——
+ * 数据污染且极难排查。宁可让调用失败，也不能静默放行。
+ */
 export async function findChapterRecord(
   baseToken: string,
   chapterNo: number,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
-  try {
-    const rows = base.matrixToObjects(
-      await base.listRecords(baseToken, TABLE.CHAPTER, {
-        fieldIds: [CHAPTER_F.NO, CHAPTER_F.TITLE],
-        filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
-        limit: 1,
-      }, signal),
-    )
-    const id = rows[0]?.['__recordId']
-    return typeof id === 'string' ? id : undefined
-  } catch {
-    return undefined
-  }
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.CHAPTER, {
+      fieldIds: [CHAPTER_F.NO, CHAPTER_F.TITLE],
+      filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
+      limit: 1,
+    }, signal),
+  )
+  const id = rows[0]?.['__recordId']
+  return typeof id === 'string' ? id : undefined
 }
 
 /**
@@ -212,6 +216,12 @@ export async function writeChapter(
     throw new Error('章节记录创建失败：未返回 record_id')
   }
 
+  // 等待记录可被查询命中，再做后续操作。
+  // 见 awaitVisible 的注释：飞书 Base 有约 1 秒的写入索引延迟。
+  await awaitVisible(baseToken, chapterNo, recordId, signal, (msg) => {
+    warnings.push(msg)
+  })
+
   // 4. 可选：创建 Wiki 节点并回填 URL
   let wikiNodeToken: string | undefined
   if (options.spaceId !== undefined || options.parentNodeToken !== undefined) {
@@ -246,6 +256,47 @@ export async function writeChapter(
     ...wikiNodeToken === undefined ? {} : { wikiNodeToken },
     warnings,
   }
+}
+
+/**
+ * 等待刚写入的章节记录可被 filter 查询命中。
+ *
+ * **实测存在的坑**：飞书 Base 写入后有约 1 秒的索引延迟
+ * （27 条记录时实测：t+668ms 未命中，t+1675ms 命中）。
+ *
+ * 后果很严重：若创建后立刻做「章节号冲突检测」，会查不到刚写的记录，
+ * 误判为"无冲突"，于是重复创建同一章节号——数据污染且难排查。
+ *
+ * 因此写入后在这里兜住：轮询直到可查或超时。超时不阻断（记录其实已创建
+ * 成功），但会通过 onTimeout 回调给出警告。
+ */
+async function awaitVisible(
+  baseToken: string,
+  chapterNo: number,
+  expectedRecordId: string,
+  signal: AbortSignal | undefined,
+  onTimeout: (message: string) => void,
+  timeoutMs = 6000,
+): Promise<boolean> {
+  const started = Date.now()
+  const delays = [0, 300, 500, 800, 1000, 1500]
+
+  for (const delay of delays) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay))
+    if (Date.now() - started > timeoutMs) break
+    try {
+      const found = await findChapterRecord(baseToken, chapterNo, signal)
+      if (found === expectedRecordId) return true
+    } catch {
+      // 查询失败继续重试，不放弃
+    }
+  }
+
+  onTimeout(
+    `第 ${chapterNo} 章已写入但索引尚未生效（等待 ${Date.now() - started}ms 仍查不到），`
+    + '短时间内重复创建可能检测不到冲突。',
+  )
+  return false
 }
 
 /** 读取一章正文。 */
