@@ -1,0 +1,16 @@
+{
+  "name": "@unwr/feishu",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UnWr 飞书适配层：封装 lark-cli，屏蔽全部参数陷阱，提供 typed 领域 API。",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@unwr/schema": "workspace:*"
+  }
+}

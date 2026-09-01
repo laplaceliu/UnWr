@@ -1,0 +1,25 @@
+# UnWr —— Unlimited Writing 的 DSH 插件配置层。
+#
+# 开发期用法（在 dsh 仓库目录下执行）：
+#   cd <user-home>/Source/github.com/dsh
+#   pnpm dsh web --patch <user-home>/Source/github.com/laplaceliu/UnWr/cordis.yml
+#
+# 加载顺序（后应用的层胜出，且替换整个 config 而非深度合并）：
+#   profile.bundles → profile patch → $DSH_HOME/cordis.patch.yml → --patch overlay
+#
+# 注意：插件路径必须是绝对路径（patch 文件只贡献配置，不改变 loader 的模块解析基目录）。
+
+- insert:
+    # 小说领域工具层：注册 novel_* 工具。
+    #
+    # 注意：@unwr/feishu 是**纯库**而非插件（无 apply，不注册进 cordis 树），
+    # 由 @unwr/novel 直接 import。实机验证发现：强行把纯 re-export 模块注册为
+    # 插件会报 "expect function or object with an apply method"。
+    # 技术选型 ADR-5 原计划做成类形式 Service，当前阶段作为库更简洁——
+    # 临时文件清理已由 withTempDir 的 finally 保证，无需 Cordis 生命周期。
+    # 若将来需要配置热替换再升级为 Service。
+    - id: unwr-novel
+      name: <user-home>/Source/github.com/laplaceliu/UnWr/packages/novel/src/index.ts
+      config:
+        # 安全模式：不注册任何删除类工具
+        readOnlySafeMode: true

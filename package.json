@@ -1,0 +1,28 @@
+{
+  "name": "unwr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UnWr — Unlimited Writing. 无限写作，小说写作 AI 智能体，DSH 插件。",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json --noEmit false --emitDeclarationOnly false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -b tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

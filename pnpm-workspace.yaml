@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+
+# esbuild 是 tsx 的运行时依赖，postinstall 会下载平台二进制。
+# 不批准则 tsx 无法启动（DSH 插件开发直接用 tsx 运行 .ts 入口）。
+onlyBuiltDependencies:
+  - esbuild

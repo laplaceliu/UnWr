@@ -1,0 +1,21 @@
+{
+  "name": "@unwr/novel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UnWr 小说领域服务与 DSH 工具：分层记忆、章节起草改稿、一致性检查。",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@unwr/feishu": "workspace:*",
+    "@unwr/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:<user-home>/Source/github.com/dsh/vendor/cordis",
+    "@deepseek-ai/dsh-tools": "link:<user-home>/Source/github.com/dsh/packages/core/tools"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@unwr/schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UnWr 共享类型与常量：飞书表名/字段名、题材参数。纯类型，无运行时依赖。",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
