@@ -13,16 +13,24 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b tsconfig.json",
-    "typecheck": "tsc -b tsconfig.json --noEmit false --emitDeclarationOnly false",
+    "build": "node scripts/build-plugin.mjs",
+    "build:watch": "node scripts/build-plugin.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -b tsconfig.json"
+    "verify:bundle": "node scripts/verify-bundle.mjs",
+    "smoke": "node --import tsx/esm packages/feishu/scripts/smoke.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "_comment_dsh_deps": "cordis / dsh-tools 必须装在【根】而非子包：pnpm 严格布局下，dist/unwr-novel.mjs 向上查找 node_modules 只会看到根目录。装在 packages/novel 下会导致宿主 DSH 加载插件时报 ERR_MODULE_NOT_FOUND（已实测）。",
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:<user-home>/Source/github.com/dsh/vendor/cordis",
+    "@deepseek-ai/dsh-tools": "link:<user-home>/Source/github.com/dsh/packages/core/tools"
   }
 }

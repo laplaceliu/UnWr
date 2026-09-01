@@ -7,10 +7,20 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:<user-home>/Source/github.com/dsh/vendor/cordis
+        version: link:../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-tools':
+        specifier: link:<user-home>/Source/github.com/dsh/packages/core/tools
+        version: link:../../dsh/packages/core/tools
     devDependencies:
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       tsx:
         specifier: ^4.22.4
         version: 4.23.13
@@ -35,13 +45,6 @@ importers:
       '@unwr/schema':
         specifier: workspace:*
         version: link:../schema
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: link:<user-home>/Source/github.com/dsh/vendor/cordis
-        version: link:../../../../dsh/vendor/cordis
-      '@deepseek-ai/dsh-tools':
-        specifier: link:<user-home>/Source/github.com/dsh/packages/core/tools
-        version: link:../../../../dsh/packages/core/tools
 
   packages/schema: {}
 

@@ -13,9 +13,5 @@
   "dependencies": {
     "@unwr/feishu": "workspace:*",
     "@unwr/schema": "workspace:*"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "link:<user-home>/Source/github.com/dsh/vendor/cordis",
-    "@deepseek-ai/dsh-tools": "link:<user-home>/Source/github.com/dsh/packages/core/tools"
   }
 }

@@ -1,1 +1,52 @@
+# ============================================================
+# UnWr —— Unlimited Writing
+# ============================================================
+
+# ---------- 依赖 ----------
+# 无斜杠：匹配任意层级（含 packages/*/node_modules）
 node_modules
+.pnpm-store
+
+# ---------- 构建产物 ----------
+# esbuild 打包的 DSH 插件 bundle（dist/unwr-novel.mjs）
+# 由 `pnpm build` 生成，不入库；clone 后需先构建
+dist
+build
+*.tsbuildinfo
+
+# ---------- 测试与覆盖率 ----------
+coverage
+.vitest-cache
+
+# ---------- 日志 ----------
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ---------- 编辑器与 IDE ----------
+# settings.json 是个人偏好（关闭自动格式化），不应影响协作者
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# ---------- 环境变量 ----------
+# DSH/模型 API Key 等敏感配置
+.env
+.env.*
+# 但保留示例文件
+!.env.example
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------------------------------------------------------------
+# 以下**应当提交**，勿加入忽略列表：
+#   pnpm-lock.yaml  —— workspace 锁文件，保证依赖可复现
+#   docs/           —— 需求与技术文档，核心资产
+#   cordis.yml      —— DSH 插件配置
+#   scripts/        —— 构建与验证脚本
+# ------------------------------------------------------------

@@ -71,17 +71,32 @@ node --import tsx/esm packages/schema/scripts/init-work.ts <base_token>
 
 ### 在 DSH 中运行
 
+UnWr 打包为单文件 bundle，源码版与 npx 版 DSH 通用。详见 `docs/tech/02-dsh-integration.md`。
+
+```bash
+# 1. 构建（npx 版 DSH 不含 tsx，必须打包）
+pnpm build              # 产出 dist/unwr-novel.mjs
+pnpm build:watch        # 开发期热重建
+
+# 2. 挂载到 profile 的用户层 patch
+#    已配置：~/.dsh/profiles/web/cordis.patch.yml
+#    内容指向 <user-home>/Source/github.com/laplaceliu/UnWr/dist/unwr-novel.mjs
+
+# 3. 验证配置层被解析
+dsh --profile web --dump-config | grep -A3 unwr
+
+# 4. 重启 DSH 实例（配置改动不会热生效）
+npx @deepseek-ai/dsh web      # 端口 3080
+
+# 启动日志出现以下内容即表示插件生效：
+#   [unwr] 插件已加载: unwr-novel
+#   [unwr] 已注册工具 (1): novel_build_context
+```
+
+**源码版 DSH**（可加载 `.ts`，适合开发）：
+
 ```bash
 cd <user-home>/Source/github.com/dsh
-
-# 首次初始化 profile
-node --import tsx/esm apps/cli/src/bin.ts plugin --profile unwr init
-
-# 验证配置层能被解析
-node --import tsx/esm apps/cli/src/bin.ts --profile unwr \
-  --patch <user-home>/Source/github.com/laplaceliu/UnWr/cordis.yml --dump-config
-
-# 启动 Web UI
 node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
   --patch <user-home>/Source/github.com/laplaceliu/UnWr/cordis.yml
 ```
