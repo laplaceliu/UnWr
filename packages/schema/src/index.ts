@@ -5,3 +5,4 @@
 
 export * from './tables.ts'
 export * from './genre.ts'
+export * from './work-schema.ts'

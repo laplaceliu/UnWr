@@ -15,6 +15,8 @@ import { registerChapterTools } from './tools/chapter.ts'
 import { registerMemoryTools } from './tools/memory.ts'
 import { registerConsistencyTools } from './tools/consistency.ts'
 import { registerRevisionTools } from './tools/revision.ts'
+import { registerEntityTools } from './tools/entity.ts'
+import { registerWorkTools } from './tools/work.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools']
@@ -44,6 +46,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerMemoryTools(ctx)
   registerConsistencyTools(ctx)
   registerRevisionTools(ctx)
+  registerEntityTools(ctx)
+  registerWorkTools(ctx)
 
   if (config.verbose === true) {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))

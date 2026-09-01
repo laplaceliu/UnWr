@@ -46,6 +46,29 @@ export function listTables(baseToken: string, signal?: AbortSignal): Promise<{ t
   return runCli(['base', '+table-list', '--base-token', baseToken], { signal })
 }
 
+/** 字段信息。 */
+export interface FieldInfo {
+  id: string
+  name: string
+  type: string
+}
+
+/**
+ * 列出一张表的所有字段。
+ *
+ * 注意：`field-list` 返回的字段在 `data.fields`（不是 `data.items`）。
+ */
+export function listFields(
+  baseToken: string,
+  tableId: string,
+  signal?: AbortSignal,
+): Promise<{ fields: FieldInfo[] }> {
+  return runCli<{ fields: FieldInfo[] }>(
+    ['base', '+field-list', '--base-token', baseToken, '--table-id', tableId],
+    { signal },
+  )
+}
+
 /** 批量创建字段。数组按顺序创建，遇到首个失败即停止且不回滚。 */
 export async function createFields(
   baseToken: string,

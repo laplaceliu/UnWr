@@ -119,7 +119,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
   --patch $UNWR_ROOT/cordis.yml
 ```
 
-## 已实现的工具（13 / 22）
+## 已实现的工具（20 / 22）
 
 | 工具 | 说明 |
 |------|------|
@@ -138,8 +138,24 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |
 | `novel_get_chapter_history` | 章节版本历史（改稿留痕，可回溯每次改动） |
 
-待实现（9 个）：设定/人物/大纲管理类、卡文救援类。
+| `novel_manage_work` | 作品管理：list / create / get_config / update_config（工具链入口） |
+| `novel_manage_setting` | 设定词条：query / upsert（设定官） |
+| `novel_manage_character` | 人物档案：query / upsert（人物官） |
+| `novel_manage_outline` | 大纲：query / set_chapter_outline / upsert_volume（大纲官） |
+| `novel_manage_foreshadow` | 伏笔：query / upsert，含埋设与回收状态 |
+| `novel_manage_plotline` | 主线/支线剧情线：query / upsert |
+| `novel_manage_branch` | 卡文救援的候选分支：query / upsert（救援官） |
+
+待实现（2 个）：novel_export_work（导出）、novel_import_manuscript（导入）。
 见 `docs/tech/01-tech-selection.md` 第四节。
+
+### 工具粒度：为什么用 action 而不是拆成 12 个工具
+
+实体管理类工具都用 `action`（query/upsert）区分读写，而非一个操作一个工具。
+原因：**工具越多，「选对工具」本身越容易成为模型的失败来源**。
+同类 CRUD 收敛到一个工具、用 action 区分，选择面小得多。
+（读上下文/写章节/改稿这类核心动作仍是独立工具——它们语义差异大，
+合并反而增加参数复杂度。）
 
 ### 改稿的定位策略
 
@@ -192,6 +208,13 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 18. `--page-size` 上限 20、`--limit` 上限 200（非 ndjson 格式）
 19. 错误响应形如 `{"ok":false,"error":{...}}`，解析信封时**不能**用 `lastIndexOf('{')`
     （会截到嵌套的 error 对象，把真实错误误报为"无法解析输出"）
+20. **update 同样有读一致性延迟**（不只 create）——写后立即查询可能读到旧值，
+    测试需 settle 等待；产品语义上接受最终一致
+21. `drive +search` 无 `--limit`（是 `--page-size` 1-20），
+    结果在 `data.results[]`（`result_meta` 内含 token/url），标题在 `title_highlighted`
+    且**含高亮 HTML 标签需剥离**
+22. DSH output schema 的嵌套 object **必须**写 `additionalProperties: false`
+    且给出 `properties`，否则类型推导失败（缺前者报 missing，缺后者推导为 never）
 
 ## 环境变量
 

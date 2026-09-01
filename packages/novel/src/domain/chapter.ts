@@ -218,9 +218,11 @@ export async function writeChapter(
 
   // 等待记录可被查询命中，再做后续操作。
   // 见 awaitVisible 的注释：飞书 Base 有约 1 秒的写入索引延迟。
-  await awaitVisible(baseToken, chapterNo, recordId, signal, (msg) => {
-    warnings.push(msg)
-  })
+  await awaitVisible(
+    async () => (await findChapterRecord(baseToken, chapterNo, signal)) === recordId,
+    signal,
+    (msg) => { warnings.push(msg) },
+  )
 
   // 4. 可选：创建 Wiki 节点并回填 URL
   let wikiNodeToken: string | undefined
@@ -259,21 +261,21 @@ export async function writeChapter(
 }
 
 /**
- * 等待刚写入的章节记录可被 filter 查询命中。
+ * 等待「写入的记录可被查询命中」。
  *
  * **实测存在的坑**：飞书 Base 写入后有约 1 秒的索引延迟
  * （27 条记录时实测：t+668ms 未命中，t+1675ms 命中）。
  *
- * 后果很严重：若创建后立刻做「章节号冲突检测」，会查不到刚写的记录，
- * 误判为"无冲突"，于是重复创建同一章节号——数据污染且难排查。
+ * 后果很严重：写入后立刻做「存在性检测」（如 upsert 查重、章节号冲突检测），
+ * 会查不到刚写的记录，误判为"不存在"，于是重复创建——数据污染且难排查。
  *
- * 因此写入后在这里兜住：轮询直到可查或超时。超时不阻断（记录其实已创建
- * 成功），但会通过 onTimeout 回调给出警告。
+ * 因此任何「写后马上要按字段查」的场景都应调用本函数兜底。
+ * 超时不抛错（记录其实已创建成功），通过返回值 false 告知调用方。
+ *
+ * @param check 谓词：返回 true 表示记录已可查询命中
  */
-async function awaitVisible(
-  baseToken: string,
-  chapterNo: number,
-  expectedRecordId: string,
+export async function awaitVisible(
+  check: () => Promise<boolean>,
   signal: AbortSignal | undefined,
   onTimeout: (message: string) => void,
   timeoutMs = 6000,
@@ -285,16 +287,15 @@ async function awaitVisible(
     if (delay > 0) await new Promise((r) => setTimeout(r, delay))
     if (Date.now() - started > timeoutMs) break
     try {
-      const found = await findChapterRecord(baseToken, chapterNo, signal)
-      if (found === expectedRecordId) return true
+      if (await check()) return true
     } catch {
       // 查询失败继续重试，不放弃
     }
   }
 
   onTimeout(
-    `第 ${chapterNo} 章已写入但索引尚未生效（等待 ${Date.now() - started}ms 仍查不到），`
-    + '短时间内重复创建可能检测不到冲突。',
+    `记录已写入但索引尚未生效（等待 ${Date.now() - started}ms 仍查不到），`
+    + '短时间内按字段查询可能检测不到它。',
   )
   return false
 }
