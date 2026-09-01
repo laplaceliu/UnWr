@@ -48,11 +48,20 @@ describe('@unwr/novel plugin', () => {
     expect(inject).toContain('tools')
   })
 
-  it('apply 注册 novel_build_context 工具', () => {
+  it('apply 注册全部小说工具', () => {
     const { ctx, registered } = fakeContext()
     apply(ctx as never, {})
-    expect(registered).toHaveLength(1)
-    expect(registered[0]?.name).toBe('novel_build_context')
+    // 具体数量随开发增长，这里只断言核心工具都在
+    expect(registered.map((t) => t.name)).toEqual(
+      expect.arrayContaining([
+        'novel_build_context',
+        'novel_write_chapter',
+        'novel_read_chapter',
+        'novel_append_chapter',
+        'novel_update_summary',
+      ]),
+    )
+    expect(registered.length).toBeGreaterThanOrEqual(5)
   })
 
   it('工具 schema 合法且含必需参数', () => {

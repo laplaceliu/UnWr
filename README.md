@@ -124,8 +124,16 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | 工具 | 说明 |
 |------|------|
 | `novel_build_context` | 组装起草某章所需的分层上下文（五层记忆 + 题材指引），内部并行拉取 |
+| `novel_write_chapter` | **新建章节**：建正文文档 + 写章节索引 + 可选建 Wiki 节点 |
+| `novel_read_chapter` | 读章节正文，支持 full / outline / keyword 三种模式 |
+| `novel_append_chapter` | 续写已有章节，并回写字数 |
+| `novel_update_summary` | **沉淀章节摘要**（分层记忆写入侧） |
+| `novel_record_character_state` | 记录人物章末状态快照（位置/伤势/情绪/持有物） |
+| `novel_record_event` | 记录事件索引（时间线、因果链） |
+| `novel_upsert_book_summary` | 写入卷级 / 全书摘要（长程压缩记忆） |
 
-其余 21 个工具见 `docs/tech/01-tech-selection.md` 第四节。
+待实现（14 个）：改稿类、一致性检查类、设定/人物/大纲管理类。
+见 `docs/tech/01-tech-selection.md` 第四节。
 
 ## 开发期踩坑记录
 
@@ -141,6 +149,10 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 8. `--limit` 上限 200（非 ndjson 格式），长篇连载需分页
 9. `--title` 会覆盖内容中同名的 `#` 标题（章标题由 title 承担，正文只用 `##`）
 10. `record-list` 返回 `record_id_list`，与 `data` 逐行对应
+11. `field-list` 的字段在 `data.fields`（不是 `data.items`）
+12. `link` 字段**只能用 table_id**，不能用表名；且需在建表后单独创建
+13. link 字段创建**偶发瞬时失败**，重跑即成功（脚本内已加 3 次退避重试）
+14. 字段名不属于该表时报 `800030201 not_found`——以 `init-work.ts` 为单一真源，勿在飞书手工改名
 
 ## 环境变量
 
