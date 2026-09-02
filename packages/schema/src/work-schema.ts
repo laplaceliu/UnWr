@@ -71,6 +71,8 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: CHAPTER_F.DOC_URL, type: 'text', style: { type: 'url' } },
     { name: CHAPTER_F.STORY_TIME, type: 'text' },
     { name: CHAPTER_F.FOLDER_URL, type: 'text', style: { type: 'url' } },
+    // 填充章壳时回填，便于后续按更新时间排序查找
+    { name: CHAPTER_F.UPDATED_AT, type: 'datetime' },
   ],
   [TABLE.CHARACTER]: [
     { name: CHARACTER_F.NAME, type: 'text' },

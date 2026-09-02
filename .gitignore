@@ -17,6 +17,8 @@ build
 # ---------- 测试与覆盖率 ----------
 coverage
 .vitest-cache
+# e2e 运行产物（task/stdout/stderr/verify.json 含真实 base token，不入库）
+e2e-results
 
 # ---------- 日志 ----------
 *.log

@@ -1,0 +1,31 @@
+# UnWr —— 智能体端到端验收（DSH headless one-shot）专属覆盖层。
+#
+# 由 `node scripts/setup-test-base.mjs --install-agent-profile` 与
+# profiles/web/cordis.patch.yml 渲染拼接后写入
+# ~/.dsh/profiles/unwr-agent/cordis.patch.yml（脱离 git，不入仓库）。
+#
+# 为什么需要本层（与 web profile 的差异）：
+#   1. headless 一次性任务没有 UI：禁用 ask_user_question，杜绝
+#      「弹窗等用户回复」在无人值守进程里无限死等。
+#   2. 覆盖 persona：dsh-headless bundle 的默认 persona 是「coding agent」，
+#      与小说编排身份不符；这里换成无人值守验收契约（自行决策、
+#      报告结尾输出 UNWR_WORK_BASE=<base_token> 供验收脚本提取）。
+#
+# 拼接顺序：本文件内容追加在渲染后的 web canonical 之后——
+# cordis patch 按 LIFO 生效，后写的 row 覆盖先写的同 id row。
+#
+# 隐私红线：本文件禁止出现个人绝对路径（与 profiles/web/cordis.patch.yml
+# 同规则，由 setup 脚本在替换 __UNWR_ROOT__ 前统一校验）。
+
+# headless 无 UI：一次性任务绝不等待用户选择
+- id: user-questions
+  disabled: true
+
+# 无人值守验收 persona（覆盖 dsh-headless bundle 的 coding-agent persona）
+- id: system-prompt
+  config:
+    persona: >-
+      你是小说项目 UnWr 的总编排官，正在无人值守模式下执行端到端验收。
+      绝不调用 ask_user_question，也绝不等待用户输入；信息不足时按题材
+      惯例自行决策，并在最终报告里说明假设。所有步骤完成后输出简明报告，
+      报告最后一行必须是 UNWR_WORK_BASE=<作品 base_token>。
