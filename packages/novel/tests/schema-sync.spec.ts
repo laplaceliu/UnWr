@@ -130,6 +130,70 @@ describe('工具输出与 output schema 同步', () => {
     },
   )
 
+  /**
+   * Schema 顶层 required 必填断言。
+   *
+   * 起因：2026-09-02 端口 3080 会话里，模型给 novel_revise_chapter 漏传 workToken，
+   * 被执行期 guard 拦下报"需要"→ 反复重试。把 workToken 从顶层 required 移除
+   * 后，模型会在第一次调用时自己意识到"这一参非强制"，避免假装自己要它。
+   *
+   * 断言目的：每个工具的顶层 parameters.required 数组都必须**完整**包含
+   * 让模型知道「必填」的字段；guard 兜底只能是补充，不能是主防线。
+   * workToken 全系列应避免 required（默认会话上下文已带）。
+   */
+  it('工具 schema 顶层 required 收口：必填字段不缺失', () => {
+    type ReqNode = { required?: string[]; properties?: Record<string, ReqNode | unknown> }
+    const expected: Record<string, string[]> = {
+      // ── 改稿 / 写章 ──
+      novel_revise_chapter: ['chapterNo', 'action', 'content'],
+      novel_read_chapter: ['chapterNo'],
+      novel_write_chapter: ['title', 'content'],  // chapterNo 可选：缺省 = current max + 1
+      novel_append_chapter: ['content'],  // chapterNo 同样可选：缺省取上一章
+      novel_list_scenes: ['chapterNo'],
+      novel_get_chapter_history: ['chapterNo'],
+      novel_build_context: [],
+      // ── 记忆沉淀 ──
+      novel_update_summary: ['chapterNo'],  // 字段已拆成 scene/events/characterChanges/.../freeform，summary 字段不存在
+      novel_record_character_state: ['chapterNo', 'character'],
+      novel_record_event: ['chapterNo', 'name'],
+      novel_upsert_book_summary: ['level', 'title', 'content'],
+      // ── 实体（entity.ts）──
+      // manage_setting / manage_character / manage_outline / manage_foreshadow / manage_plotline / manage_branch
+      // 都是「多 action 共用 schema」的形态（action 守门员分支），所以 schema.required
+      // 只有 action；具体必填字段在 description 中「REQUIRED for upsert」标注 + execute 期 throw 兜底。
+      novel_manage_setting: ['action'],
+      novel_manage_character: ['action'],
+      novel_manage_outline: ['action'],
+      novel_manage_foreshadow: ['action'],
+      novel_manage_plotline: ['action'],
+      novel_manage_branch: ['action'],
+      // ── 一致性 ──
+      novel_run_consistency_check: [],
+      novel_get_semantic_check_pack: [],
+      // ── work ──
+      novel_manage_work: ['action'],
+    }
+    for (const [toolName, required] of Object.entries(expected)) {
+      const tool = collectTools().get(toolName)
+      if (tool === undefined) {
+        // 测试允许 listed tool 在 collectTools 之外——但 revert 失配了直接失败
+        throw new Error(`schema-sync: ${toolName} 未注册`)
+      }
+      const params = tool.parameters as ReqNode
+      expect(params.required ?? [], `${toolName}.parameters.required`).toEqual(
+        expect.arrayContaining(required),
+      )
+    }
+  })
+
+  it('workToken 在所有工具顶层 required 都不出现（会话默认承接，详见 resolveWorkToken）', () => {
+    for (const [toolName, tool] of collectTools()) {
+      const params = tool.parameters as { required?: string[] }
+      const reqs = params.required ?? []
+      expect(reqs, `${toolName} 不应把 workToken 强制为顶层 required`).not.toContain('workToken')
+    }
+  })
+
   it.skipIf(!HAS_BASE)(
     'list 动作真实输出通过 schema 校验',
     { timeout: 60_000 },

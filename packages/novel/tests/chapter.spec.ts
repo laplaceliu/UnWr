@@ -91,7 +91,9 @@ describe('工具注册', () => {
   it('novel_write_chapter 必填参数正确', () => {
     const tool = collectTools().get('novel_write_chapter')
     const params = tool?.parameters as { required?: string[] } | undefined
-    expect(params?.required ?? []).toEqual(expect.arrayContaining(['workToken', 'title', 'content']))
+    // workToken 不再是必填：会话上下文默认承接（resolveWorkToken）；title + content 才是必填。
+    expect(params?.required ?? []).toEqual(expect.arrayContaining(['title', 'content']))
+    expect(params?.required ?? []).not.toContain('workToken')
   })
 })
 

@@ -81,6 +81,15 @@ const WRITING_CONVENTIONS = `
    起草官管成稿、改稿官管修订）；简单查询可直接调工具。
 5. **角色委托工具可用后台并行**：互不依赖的委托（如设定官+人物官）应放在
    同一条消息里并行发起。
+6. **workToken 纪律**：所有工具的 workToken 都**可省略**（自动沿用会话默认
+   作品）。30 位 base_token 手抄必错（实测单会话抄错 2 次），只在多作品间
+   显式切换时才传入；抄错报 NOTEXIST 时用 novel_manage_work(action=list) 核对。
+7. **章节大纲的写入时机**：set_chapter_outline 依赖章节记录已存在。规划
+   章节级大纲时直接用 novel_write_chapter 的 outline 参数（或先写章再回填），
+   **不要**在章节创建前批量调用 set_chapter_outline。
+8. **改稿纪律**：revise 的 patch/replace 失败时，不要反复用猜的 match 重试，
+   也**绝不用占位文本（如 X）试探写工具**——会真实写入。先用
+   novel_list_scenes 取场景/块结构化定位，再按块 ID 精确修改。
 `.trim()
 
 export function apply(ctx: Context, config: Config = {}): void {

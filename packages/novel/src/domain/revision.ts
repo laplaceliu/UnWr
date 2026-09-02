@@ -261,6 +261,30 @@ async function currentWords(
 }
 
 /**
+ * 把 patch 阶段的失败装饰为可被模型/调用方直接决策的错误。
+ *
+ * 实测高失败率：patch（精确文本替换）的 match 即使预检通过了，
+ * lark-cli 仍可能因 markdown 转义差异、空格不可见字符差异、版本号 race
+ * 报 degrade_code=1011（fatal:MatchFailure）。这时再 retry 同参数无意义。
+ * 给 agent 一个清晰的下一步：别再用 patch，改用结构化定位（replace + scene + paragraph）。
+ *
+ * 也兼容「match 在预检里就直接不存在」之外的二次失败场景，
+ * 抛出后模型读取这条消息即可自我归因。
+ */
+export function enrichPatchError(e: Error): Error {
+  const detail = e.message
+  return new Error(
+    `patch 失败：${detail}`
+    + '\n→ patch 对匹配文本过敏感（任何空白/标点差异都拒改），与其继续重试，'
+    + '不如先 novel_list_scenes 取场景列表，然后改用 action=replace + scene + paragraph'
+    + '（结构化定位，不依赖 match 逐字符匹配）。'
+    + '\n→ 若仍要继续 patch：请先 novel_read_chapter 拿到当前段落原文，逐字符比对 '
+    + '（特别注意全角/半角、空格、换行符、引号），再用新 match 重试。',
+    { cause: e },
+  )
+}
+
+/**
  * 执行改稿。
  *
  * 所有动作都会在飞书留下版本，可用 `docs +history-list` 回溯。
@@ -334,7 +358,11 @@ export async function reviseChapter(
     }
     locatedBy = 'match'
     blockId = ''
-    res = await docs.strReplace(docToken, params.target.match, params.content, signal)
+    try {
+      res = await docs.strReplace(docToken, params.target.match, params.content, signal)
+    } catch (e) {
+      throw enrichPatchError(e instanceof Error ? e : new Error(String(e)))
+    }
     warnings.push(...res.warnings ?? [])
   } else {
     // replace / expand 需要定位到块。优先级：

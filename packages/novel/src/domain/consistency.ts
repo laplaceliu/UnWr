@@ -22,6 +22,7 @@ import {
   TABLE,
 } from '@unwr/schema'
 import type { ChapterRef } from '../context/builder.ts'
+import { createRecordsWithSelfHeal } from './selfheal.ts'
 
 /** 问题类型（与检查问题表「问题类型」选项对应）。 */
 export const ISSUE_TYPE = {
@@ -426,9 +427,12 @@ export async function persistIssues(
 
   if (rows.length === 0) return { created: 0, skipped: issues.length }
 
-  // 批量上限 200
+  // 批量上限 200；走自愈包装（旧库缺字段 / 收敛期的 not_found 自动补齐重试）
   for (let i = 0; i < rows.length; i += 200) {
-    await base.createRecords(baseToken, TABLE.ISSUE, rows.slice(i, i + 200), signal)
+    await createRecordsWithSelfHeal(
+      baseToken, TABLE.ISSUE, rows.slice(i, i + 200), signal,
+      (msg) => console.error(`[unwr] ${msg}`),
+    )
   }
   return { created: rows.length, skipped: issues.length - rows.length }
 }

@@ -81,9 +81,10 @@ describe('@unwr/novel plugin', () => {
     expect(Object.keys(params?.properties ?? {})).toEqual(
       expect.arrayContaining(['workToken', 'chapterNo', 'presetId']),
     )
-    // workToken / chapterNo 必填，presetId 可选
-    expect(params?.required ?? []).toEqual(expect.arrayContaining(['workToken', 'chapterNo']))
-    expect(params?.required ?? []).not.toContain('presetId')
+    // chapterNo 必填；workToken / presetId 可选——workToken 缺省时
+    // 沿用会话默认作品（resolveWorkToken，实测手抄 30 位 token 必错）
+    expect(params?.required ?? []).toEqual(['chapterNo'])
+    expect(params?.properties ?? {}).toHaveProperty('workToken')
 
     // 工具名必须匹配 DSH 约定：64 字符内，[A-Za-z0-9_-]
     expect(/^[A-Za-z0-9_-]{1,64}$/.test(tool?.name ?? '')).toBe(true)

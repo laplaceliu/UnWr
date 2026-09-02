@@ -18,6 +18,9 @@ import {
 } from '@unwr/schema'
 import type { MemoryLevel } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
+// 记忆写入必须走自愈包装：旧库缺 link 字段 / 新库收敛期都会报 not_found，
+// 裸调 createRecords 会让章末记忆沉淀整批失败（2026-09-01 实测 8 连挂）。
+import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
  * 待写入的字段集合。
@@ -111,11 +114,12 @@ export async function updateChapterSummary(
     throw new Error(`第 ${chapterNo} 章不存在，无法写入摘要。请先创建章节。`)
   }
   const summaryText = typeof summary === 'string' ? summary : renderSummary(summary)
-  await base.updateRecords(
+  await updateRecordsWithSelfHeal(
     baseToken,
     TABLE.CHAPTER,
     { [recordId]: { [CHAPTER_F.SUMMARY]: summaryText } },
     signal,
+    (msg) => console.error(`[unwr] ${msg}`),
   )
   return { recordId, summaryText }
 }
@@ -172,7 +176,10 @@ export async function recordCharacterState(
     fields[CHARACTER_STATE_F.CHARACTER] = [{ id: characterRecordId }]
   }
 
-  const ids = await base.createRecords(baseToken, TABLE.CHARACTER_STATE, [fields], signal)
+  const ids = await createRecordsWithSelfHeal(
+    baseToken, TABLE.CHARACTER_STATE, [fields], signal,
+    (msg) => { warnings.push(msg) },
+  )
   const recordId = ids[0]
   return {
     ...recordId === undefined ? {} : { recordId },
@@ -227,7 +234,10 @@ export async function recordEvent(
   }
   if (participantIds.length > 0) fields[EVENT_F.PARTICIPANTS] = participantIds
 
-  const ids = await base.createRecords(baseToken, TABLE.EVENT, [fields], signal)
+  const ids = await createRecordsWithSelfHeal(
+    baseToken, TABLE.EVENT, [fields], signal,
+    (msg) => { warnings.push(msg) },
+  )
   const recordId = ids[0]
   if (recordId === undefined) throw new Error('事件记录创建失败：未返回 record_id')
   return { recordId, warnings }
@@ -260,11 +270,20 @@ export async function upsertBookSummary(
   )
   const existingId = rows[0]?.['__recordId']
   if (typeof existingId === 'string') {
-    await base.updateRecords(baseToken, TABLE.MEMORY, { [existingId]: fields }, signal)
+    await updateRecordsWithSelfHeal(
+      baseToken,
+      TABLE.MEMORY,
+      { [existingId]: fields },
+      signal,
+      (msg) => console.error(`[unwr] ${msg}`),
+    )
     return { recordId: existingId, updated: true }
   }
 
-  const ids = await base.createRecords(baseToken, TABLE.MEMORY, [fields], signal)
+  const ids = await createRecordsWithSelfHeal(
+    baseToken, TABLE.MEMORY, [fields], signal,
+    (msg) => console.error(`[unwr] ${msg}`),
+  )
   const recordId = ids[0]
   if (recordId === undefined) throw new Error('记忆索引创建失败：未返回 record_id')
   return { recordId, updated: false }

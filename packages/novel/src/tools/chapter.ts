@@ -170,8 +170,9 @@ function registerReadChapter(ctx: Context): void {
       mode: {
         type: 'string', enum: ['full', 'outline', 'search'],
         description: 'full = whole text; outline = scene headings only; search = find keyword. Defaults to full.',
+        default: 'full',
       },
-      keyword: { type: 'string', description: 'Required when mode is search.' },
+      keyword: { type: 'string', description: 'Required when mode is search. Required (and only valid) when mode=search.' },
     },
     output: {
       schema: {

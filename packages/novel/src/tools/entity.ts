@@ -43,7 +43,7 @@ function registerSetting(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      term: { type: 'string', description: 'Entry name. REQUIRED for upsert.' },
+      term: { type: 'string', required: true, description: 'Entry name. REQUIRED for upsert.' },
       definition: { type: 'string', description: 'Entry definition (upsert).' },
       category: {
         type: 'array', items: { type: 'string' },
@@ -101,7 +101,7 @@ function registerCharacter(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      name: { type: 'string', description: 'Character name. REQUIRED for upsert; filters results for query.' },
+      name: { type: 'string', required: true, description: 'Character name. REQUIRED for upsert; filters results for query.' },
       alias: { type: 'string', description: 'Aliases / forms of address, comma-separated (upsert).' },
       role: { type: 'string', description: 'Role or identity (upsert).' },
       traits: {
@@ -164,9 +164,9 @@ function registerOutline(ctx: Context): void {
         enum: ['query', 'set_chapter_outline', 'upsert_volume'],
         required: true,
       },
-      chapterNo: { type: 'number', description: 'Chapter number (set_chapter_outline; optionally filters query).' },
+      chapterNo: { type: 'number', description: 'Chapter number. REQUIRED for set_chapter_outline; optional filter for query.' },
       outline: { type: 'string', description: 'Outline notes for the chapter (set_chapter_outline).' },
-      volume: { type: 'string', description: 'Volume name (set_chapter_outline / upsert_volume).' },
+      volume: { type: 'string', description: 'Volume name. REQUIRED for upsert_volume; optional for set_chapter_outline.' },
       storyTime: { type: 'string', description: 'In-story time (set_chapter_outline).' },
       order: { type: 'number', description: 'Volume order (upsert_volume).' },
       theme: { type: 'string', description: 'Volume theme (upsert_volume).' },
@@ -240,7 +240,7 @@ function registerForeshadow(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      content: { type: 'string', description: 'What the foreshadowing is. REQUIRED for upsert.' },
+      content: { type: 'string', required: true, description: 'What the foreshadowing is. REQUIRED for upsert.' },
       type: {
         type: 'string', enum: ['主线', '支线', '人物', '物品'],
         description: 'Type (upsert).',
@@ -295,7 +295,7 @@ function registerPlotline(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      name: { type: 'string', description: 'Plotline name. REQUIRED for upsert.' },
+      name: { type: 'string', required: true, description: 'Plotline name. REQUIRED for upsert.' },
       type: { type: 'string', enum: ['主线', '支线'], description: 'Type (upsert); filters query.' },
       status: {
         type: 'string', enum: ['铺垫', '推进', '高潮', '收束', '完结'],
@@ -346,7 +346,7 @@ function registerBranch(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      title: { type: 'string', description: 'Branch title. REQUIRED for upsert.' },
+      title: { type: 'string', required: true, description: 'Branch title. REQUIRED for upsert.' },
       description: { type: 'string', description: 'What happens in this branch (upsert).' },
       adoptStatus: {
         type: 'string', enum: ['候选', '已采用', '已否决'],

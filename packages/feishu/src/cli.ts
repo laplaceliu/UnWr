@@ -14,7 +14,7 @@
 
 import { spawn } from 'node:child_process'
 import type { CliErrorPayload } from './errors.ts'
-import { FeishuError, classifyError } from './errors.ts'
+import { FeishuError, classifyError, hintFor } from './errors.ts'
 
 /** 执行身份。`user` 用于读写用户自己的资源，`bot` 用于机器人资源。 */
 export type Identity = 'user' | 'bot'
@@ -31,8 +31,14 @@ export interface RunOptions {
   signal?: AbortSignal
 }
 
-/** 默认的 lark-cli 可执行文件路径。 */
-const DEFAULT_BIN = process.env.UNWR_LARK_BIN ?? 'lark-cli'
+/**
+ * 默认的 lark-cli 可执行文件路径。
+ * 每调用读一次 env，方便测试用 UNWR_LARK_BIN 注入 stub（顶层常量在
+ * import 时固化，会跑过早配置的 setupStub）。
+ */
+function defaultBin(): string {
+  return process.env.UNWR_LARK_BIN ?? 'lark-cli'
+}
 
 /** CLI 成功返回的信封。 */
 interface CliEnvelope<T> {
@@ -74,7 +80,7 @@ export async function runCli<T>(
   retry: RetryPolicy = {},
 ): Promise<T> {
   const { maxRetries = 2, baseDelayMs = 500 } = retry
-  const command = `${DEFAULT_BIN} ${args.join(' ')}`
+  const command = `${defaultBin()} ${args.join(' ')}`
 
   let lastError: FeishuError | undefined
 
@@ -109,7 +115,7 @@ async function runOnce<T>(
     stderr: string
     exitCode: number | null
   }>((resolve, reject) => {
-    const child = spawn(DEFAULT_BIN, argv, {
+    const child = spawn(defaultBin(), argv, {
       cwd,
       // 不经过 shell：规避 shell 转义问题（章节正文含引号、反引号等）
       shell: false,
@@ -176,10 +182,19 @@ async function runOnce<T>(
   }
 
   if (parsed.ok !== true || parsed.error !== undefined) {
-    const message = parsed.error?.message ?? `cli failed with exit code ${String(exitCode)}`
+    // envelope 里若 message 为空（实测出现在 lark-cli 文档补丁、字段冲突等场景，
+    // 会把原始 stderr 写到 stderr 而不是 error.message），则回退到 raw stderr。
+    // 跳过纯 envelope JSON 自身——那不是给人类看的可读信息。
+    const envelopeJson = /^\s*\{[\s\S]*\}\s*$/.test(stdout) ? '' : stdout.trim()
+    const rawTail = stderr.trim() !== '' ? stderr.trim() : envelopeJson
+    const message = parsed.error?.message
+      ?? (rawTail !== '' ? rawTail : `cli failed with exit code ${String(exitCode)}`)
+    const kind = classifyError(message, parsed.error?.code)
     throw new FeishuError(
-      classifyError(message, parsed.error?.code),
-      message,
+      kind,
+      // 模型/用户只能看到 message（hint 若不拼进来就永远不可见）。
+      // 原文仍是前缀，上层按子串断言的测试不受影响。
+      `${message}（${hintFor(kind)}）`,
       {
         code: parsed.error?.code,
         cliCommand: command,

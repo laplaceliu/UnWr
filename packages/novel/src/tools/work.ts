@@ -15,7 +15,7 @@ import { WORK_F } from '@unwr/schema'
 import {
   createWorkRootFolder, getWorkConfig, listWorks, updateWorkConfig,
 } from '../domain/work.ts'
-import { initWork } from '../domain/bootstrap.ts'
+import { ensureWorkSchemaCached, initWork } from '../domain/bootstrap.ts'
 import { resolveWorkToken } from './defaults.ts'
 
 /** 注册作品管理工具。 */
@@ -38,7 +38,7 @@ export function registerWorkTools(ctx: Context): void {
         description: 'Base token. Required for get_config / update_config / link_folder.',
       },
 
-      name: { type: 'string', description: 'Work title (create / update_config).' },
+      name: { type: 'string', description: 'Work title. REQUIRED for create; also accepts on update_config.' },
       genre: {
         type: 'string', enum: ['中文网文', '类型小说', '纯文学'],
         description: 'Genre (create / update_config).',
@@ -172,6 +172,32 @@ export function registerWorkTools(ctx: Context): void {
         args.workToken = fallback
       }
 
+      // 旧库自愈 + token 核验：每个会话的第一个 manage_work 调用会触发
+      // 一次 schema 校验（10 分钟缓存），顺带把「token 抄错」拦在入口，
+      // 而不是等后面的写入报晦涩的 NOTEXIST。校验失败 = 库不可访问。
+      const schemaCheck = await ensureWorkSchemaCached(args.workToken, signal)
+      if (!schemaCheck.ok) {
+        throw new Error(
+          `作品库 ${args.workToken} 不可访问（token 可能耗错）。`
+            + '请用 novel_manage_work(action=list) 核对 base_token；'
+            + '之后的调用可省略 workToken（自动沿用会话默认作品）。',
+        )
+      }
+      const schemaWarnings: string[] = []
+      if (schemaCheck.createdTables.length > 0) {
+        schemaWarnings.push(`已自动补建缺失的数据表：${schemaCheck.createdTables.join(', ')}`)
+      }
+      if (schemaCheck.createdFields > 0) {
+        schemaWarnings.push(
+          `已自动补齐作品库缺失字段 ${schemaCheck.createdFields} 个（旧库升级）。`,
+        )
+      }
+      if (schemaCheck.failedLinks.length > 0) {
+        schemaWarnings.push(
+          `部分关联字段自动补齐失败（稍后重试或用 sync-fields 脚本）：${schemaCheck.failedLinks.join(', ')}`,
+        )
+      }
+
       // 为已有作品补挂知识空间（此前创建的作品没有根节点，正文散落根目录）
       if (args.action === 'link_folder') {
 
@@ -186,6 +212,7 @@ export function registerWorkTools(ctx: Context): void {
             works: [],
             baseToken: args.workToken,
             folderUrl: cfg.folderUrl,
+            ...schemaWarnings.length === 0 ? {} : { warnings: schemaWarnings },
             writingGuide: '该作品已挂接知识空间，无需重复挂接。',
           }
         }
@@ -221,6 +248,7 @@ export function registerWorkTools(ctx: Context): void {
             currentChapter: cfg.currentChapter,
             folderUrl: cfg.folderUrl,
           },
+          ...schemaWarnings.length === 0 ? {} : { warnings: schemaWarnings },
           writingGuide: renderGuide(cfg.preset),
         }
       }
@@ -241,6 +269,7 @@ export function registerWorkTools(ctx: Context): void {
         works: [],
         baseToken: args.workToken,
         config: { recordId: r.recordId, updated: r.updated },
+        ...schemaWarnings.length === 0 ? {} : { warnings: schemaWarnings },
       }
     },
   }))

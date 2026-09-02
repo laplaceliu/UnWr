@@ -16,8 +16,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { apply } from '../src/index.ts'
-import { initWork } from '../src/domain/bootstrap.ts'
+import { ensureWorkSchema, initWork } from '../src/domain/bootstrap.ts'
 import { base, drive } from '@unwr/feishu'
+import type { FieldSchema } from '@unwr/feishu'
 import { FORESHADOW_F, TABLE } from '@unwr/schema'
 import { waitForBaseReady, withConvergenceRetry } from './helpers.ts'
 
@@ -315,5 +316,61 @@ describe.skipIf(!HAS_SPACE)('全流程 e2e：全新作品生命周期', () => {
   afterAll(async () => {
     // e2e 产生的两部测试作品保留在云盘（可人工检查），不做删除——
     // 工具层刻意不提供删除能力（readOnlySafeMode）
+  })
+})
+
+/**
+ * 旧库 schema 自愈（2026-09-01 会话事故的回归测试）：
+ * 旧版本插件建的库没有 link 字段（甚至可能缺普通字段），写记忆表全部
+ * 报 not_found。修复后 get_config 入口自动补齐（10 分钟缓存）。
+ *
+ * 用「裸 Base + 单表」模拟旧库，验证：修复 → warnings 暴露 → 缓存命中 → 幂等。
+ */
+describe.skipIf(!HAS_SPACE)('e2e：旧库 schema 自愈', () => {
+  const repairStamp = `repair-${Date.now().toString(36)}`
+  let bareToken = ''
+
+  it('1. 模拟旧库：裸建 Base + 只建一张缺字段的作品表', async () => {
+    const created = await base.createBase(`[e2e] schema自愈-${repairStamp}`, {}, undefined)
+    bareToken = created.base_token
+    expect(bareToken).toBeTruthy()
+    // Base 刚建可查有可见性延迟；作品表故意缺「题材/规模/文档目录」等字段
+    await withConvergenceRetry(() => base.createTable(
+      bareToken,
+      '作品表',
+      [{ name: '作品名', type: 'text' }] as FieldSchema[],
+    ))
+  })
+
+  it('2. get_config 自动修复旧库 → warnings 暴露补建内容，配置回落默认', { timeout: 150_000 }, async () => {
+    const tool = collectTools().get('novel_manage_work')
+    expect(tool).toBeDefined()
+    const r = await tool!.execute(
+      { action: 'get_config', workToken: bareToken },
+      { signal: AbortSignal.timeout(150_000) },
+    ) as Record<string, unknown>
+    const warnings = (r.warnings ?? []) as string[]
+    // 12 张缺失的表被补建（link 字段创建失败会另有 warning，必须为空）
+    expect(warnings.some((w) => w.includes('已自动补建缺失的数据表'))).toBe(true)
+    expect(warnings.some((w) => w.includes('补齐作品库缺失字段'))).toBe(true)
+    expect(warnings.some((w) => w.includes('自动补齐失败'))).toBe(false)
+    // 作品表没有记录 → 配置回落默认而非报错（原有容错行为保留）
+    expect((r.config as { name?: string }).name).toBe('')
+  })
+
+  it('3. 紧接着的 get_config 命中缓存 → 无修复 warning', async () => {
+    const tool = collectTools().get('novel_manage_work')
+    const r = await tool!.execute(
+      { action: 'get_config', workToken: bareToken },
+      { signal: AbortSignal.timeout(60_000) },
+    ) as Record<string, unknown>
+    expect(r.warnings ?? []).toEqual([])
+  })
+
+  it('4. ensureWorkSchema 幂等：零新增、零失败', async () => {
+    const r = await ensureWorkSchema(bareToken)
+    expect(r.createdTables).toEqual([])
+    expect(r.createdFields).toBe(0)
+    expect(r.failedLinks).toEqual([])
   })
 })

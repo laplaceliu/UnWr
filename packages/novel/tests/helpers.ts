@@ -85,7 +85,9 @@ export async function withConvergenceRetry<T>(
     } catch (e) {
       lastError = e
       const msg = e instanceof Error ? e.message : String(e)
-      if (!/not.?found|1254045|800030201/i.test(msg)) throw e
+      // NOTEXIST（91402）也是收敛期常见措辞——但注意它同样出现在
+      // token 抄错时；测试里 token 都来自工具返回，不适用该歧义。
+      if (!/not.?found|notexist|1254045|800030201/i.test(msg)) throw e
       if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 3000))
     }
   }

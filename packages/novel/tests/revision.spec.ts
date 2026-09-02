@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import { maxChapterNo } from '../src/domain/chapter.ts'
+import { enrichPatchError } from '../src/domain/revision.ts'
 
 interface MinimalTool {
   name: string
@@ -39,12 +40,17 @@ describe('工具注册', () => {
     )
   })
 
-  it('revise_chapter 必填 workToken/chapterNo/action/content', () => {
+  it('revise_chapter 必填 chapterNo / action / content（workToken 可选：缺省用会话最近 work）', () => {
     const tool = collectTools().get('novel_revise_chapter')
     const params = tool?.parameters as { required?: string[] } | undefined
+    // 三个真正必填字段：chapterNo(action 可能为某些子类型所用,但顶层 schema 必填)、action、content。
+    // workToken 故意省略：所有修章工具共享 `resolveWorkToken(...)` 在执行期兜底（见
+    // packages/novel/src/tools/defaults.ts:12），这样单章工作流不必每次显式传 base_token。
     expect(params?.required ?? []).toEqual(
-      expect.arrayContaining(['workToken', 'chapterNo', 'action', 'content']),
+      expect.arrayContaining(['chapterNo', 'action', 'content']),
     )
+    // 兜底：workToken 不在顶层 required 里（防止有人误回潮把它重新标为 required）。
+    expect(params?.required ?? []).not.toContain('workToken')
   })
 
   it('action 只接受三种取值', () => {
@@ -239,5 +245,35 @@ describe('场景标题归一化', () => {
     expect(strip('二、交锋')).toBe('交锋')
     expect(strip('2. 交锋')).toBe('交锋')
     expect(strip('交锋')).toBe('交锋')
+  })
+})
+
+/**
+ * patch 失败装饰回归。
+ *
+ * 背景（2026-09-01 会话实测）：lark-cli `docs +update --command str_replace`
+ * 经常在预检通过后仍报降级错误（degrade_code=1011，fatal:MatchFailure），
+ * 原始 message 是 "cli failed with exit code 1"。模型重试 7 次也是这个
+ * 错。前一版没有引导——必须告诉 agent「别再用 patch，改用结构化定位」。
+ */
+describe('enrichPatchError（patch 失败装饰）', () => {
+  it('wrap 后保留原始 detail 信息', () => {
+    const inner = new Error('文档更新未生效（result=failed）：degrade_code=1011 fatal:MatchFailure')
+    const got = enrichPatchError(inner)
+    expect(got.message).toContain('文档更新未生效')
+    expect(got.cause).toBe(inner)
+  })
+
+  it('明确告诉调用方改用 replace + scene + paragraph', () => {
+    const got = enrichPatchError(new Error('x'))
+    expect(got.message).toContain('action=replace')
+    expect(got.message).toContain('scene')
+    expect(got.message).toContain('paragraph')
+  })
+
+  it('提供继续 patch 的备选路径（再读 + 比对）', () => {
+    const got = enrichPatchError(new Error('x'))
+    expect(got.message).toContain('novel_read_chapter')
+    expect(got.message).toContain('全角/半角')
   })
 })

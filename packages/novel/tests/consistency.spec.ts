@@ -218,18 +218,22 @@ describe('检查工具注册', () => {
     expect(tools.has('novel_get_semantic_check_pack')).toBe(true)
   })
 
-  it('run_consistency_check 只需 workToken', () => {
+  it('run_consistency_check 无必填（都可选）', () => {
     const tool = collectTools().get('novel_run_consistency_check')
     const params = tool?.parameters as { required?: string[] } | undefined
-    expect(params?.required ?? []).toEqual(['workToken'])
+    // workToken 不必填：会话上下文默认承接；其他校验字段（targetType 等）也都可选。
+    // 上一版「只需 workToken」是错的，现在实际整个 parameters.required 应该是空的。
+    expect(params?.required ?? []).toEqual([])
+    expect(params?.required ?? []).not.toContain('workToken')
   })
 
-  it('semantic_check_pack 必填 workToken 与 chapterNo', () => {
+  it('semantic_check_pack 必填 chapterNo（workToken 不必填）', () => {
     const tool = collectTools().get('novel_get_semantic_check_pack')
     const params = tool?.parameters as { required?: string[] } | undefined
     expect(params?.required ?? []).toEqual(
-      expect.arrayContaining(['workToken', 'chapterNo']),
+      expect.arrayContaining(['chapterNo']),
     )
+    expect(params?.required ?? []).not.toContain('workToken')
   })
 })
 

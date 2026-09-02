@@ -46,6 +46,9 @@ const NOT_FOUND_PATTERNS = [
   /不存在/,
   /no such/i,
   /cannot find/i,
+  // 实测：bitable 对不存在的 base_token / table 返回大写 "NOTEXIST"（常为 91402），
+  // 也有 "not exist"（带空格）的变体
+  /not.?exist/i,
 ]
 
 const RATE_LIMIT_PATTERNS = [
@@ -80,8 +83,10 @@ export function classifyError(message: string, code?: number): FeishuErrorKind {
   if (code !== undefined) {
     if (code === 99991663 || code === 99991661) return 'auth'
     if (code === 1254290 || code === 1254306) return 'rate_limited'
-    if (code === 1254045 || code === 230002) return 'not_found'
-    if (code === 99991668 || code === 91402) return 'permission'
+    // 91402 = Base/资源不存在（此前误归 permission，导致 token 抄错时
+    // 错误类别失真、上层自愈与提示全部走偏）；1254045 = 记录/资源不可见
+    if (code === 1254045 || code === 230002 || code === 91402) return 'not_found'
+    if (code === 99991668) return 'permission'
   }
   // 参数校验要在 not_found 之前：
   // 「invalid --limit 500: must be between 1 and 200」含 "between"，
@@ -126,22 +131,28 @@ export class FeishuError extends Error {
 
   /** 面向模型/用户的可操作提示。 */
   hint(): string {
-    switch (this.kind) {
-      case 'auth':
-        return '飞书认证已失效，请运行 `lark-cli auth login` 重新登录后重试。'
-      case 'not_found':
-        return '目标资源不存在，请检查 token 或名称是否正确。'
-      case 'invalid_argument':
-        return '参数不合法，请检查字段名与 JSON 结构。'
-      case 'rate_limited':
-        return '触发飞书 API 频率限制，稍后自动重试。'
-      case 'timeout':
-        return '调用超时，稍后自动重试。'
-      case 'permission':
-        return '权限不足，请检查该资源的访问权限。'
-      default:
-        return '飞书调用失败，请查看原始错误信息。'
-    }
+    return hintFor(this.kind)
+  }
+}
+
+/** 面向模型/用户的可操作提示（独立导出，便于在抛错点直接拼接进 message）。 */
+export function hintFor(kind: FeishuErrorKind): string {
+  switch (kind) {
+    case 'auth':
+      return '飞书认证已失效，请运行 `lark-cli auth login` 重新登录后重试。'
+    case 'not_found':
+      return '目标资源不存在：base_token 抄错时用 novel_manage_work(action=list) 核对；'
+        + '新建库字段/记录未收敛（分钟级）时稍等重试即可。'
+    case 'invalid_argument':
+      return '参数不合法，请检查字段名与 JSON 结构。'
+    case 'rate_limited':
+      return '触发飞书 API 频率限制，稍后自动重试。'
+    case 'timeout':
+      return '调用超时，稍后自动重试。'
+    case 'permission':
+      return '权限不足，请检查该资源的访问权限。'
+    default:
+      return '飞书调用失败，请查看原始错误信息。'
   }
 }
 
