@@ -93,7 +93,12 @@ function registerCharacterState(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
-      character: { type: 'string', required: true, description: 'Character name' },
+      character: {
+        type: 'string', required: true,
+        description: 'Character name, exactly as in the character table. '
+          + 'Do NOT append parenthetical notes like 陆铮（重伤） — put that in '
+          + 'physical / emotion / location / summary instead.',
+      },
       location: { type: 'string', description: 'Where they are at chapter end.' },
       physical: { type: 'string', description: 'Physical condition (injuries, fatigue).' },
       emotion: { type: 'string', description: 'Emotional state.' },
@@ -148,7 +153,10 @@ function registerRecordEvent(ctx: Context): void {
       isTurningPoint: { type: 'boolean', description: 'Is this a turning point?' },
       participants: {
         type: 'array', items: { type: 'string' },
-        description: 'Character names involved.',
+        description: 'Character names involved, exactly as in the character table. '
+          + 'A trailing parenthetical note is split out automatically '
+          + '(陆铮（不在场） → links 陆铮, stores 不在场 in the participant-notes field). '
+          + 'Names not in the character table are skipped with a warning.',
       },
     },
     output: {
@@ -157,6 +165,7 @@ function registerRecordEvent(ctx: Context): void {
         properties: {
           recordId: { type: 'string', required: true },
           warnings: { type: 'array', required: true, items: { type: 'string' } },
+          participantNotes: { type: 'string' },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],

@@ -102,6 +102,49 @@ export async function findCharacterRecord(
   return typeof id === 'string' ? id : undefined
 }
 
+/**
+ * 拆分人物串里的尾随括号注记：`陆铮（不在场）` → 姓名 `陆铮` + 注记 `不在场`。
+ *
+ * 为什么需要：模型传参与人物/状态人物时常把临场状态写成括号后缀，而
+ * 人物 link 必须按人物表精确姓名匹配——整串传入恒匹配失败（2026-09-02
+ * 实测 e2e：5 条事件的参与人物因此被静默跳过）。拆开后姓名进 link、
+ * 注记进独立备注列，两边都不丢。
+ *
+ * 规则：
+ *   - 只剥**完整的尾随**括号（中英文括号都认）；括号不闭合则不动
+ *   - 剥离后为空（整串都在括号里，如「（路人）」）则原样返回，不当姓名用
+ */
+export function splitParticipantNote(raw: string): { name: string; note?: string } {
+  const m = /[（(]([^（）()]*)[）)]\s*$/.exec(raw.trim())
+  if (m === null) return { name: raw.trim() }
+  const note = (m[1] ?? '').trim()
+  const name = raw.slice(0, m.index).trim()
+  if (name === '') return { name: raw.trim() }
+  return note === '' ? { name } : { name, note }
+}
+
+/**
+ * 按「先剥离注记、再原串兜底」的顺序解析人物记录。
+ * 返回命中的记录 ID 与实际采用的解析说明（供 warnings 引用）。
+ */
+async function resolveCharacterFlexible(
+  baseToken: string,
+  raw: string,
+  signal?: AbortSignal,
+): Promise<{ recordId?: string; name: string; note?: string; strippedWorked: boolean }> {
+  const { name, note } = splitParticipantNote(raw)
+  if (note === undefined) {
+    const recordId = await findCharacterRecord(baseToken, name, signal)
+    return { recordId, name, strippedWorked: false }
+  }
+  const stripped = await findCharacterRecord(baseToken, name, signal)
+  if (stripped !== undefined) return { recordId: stripped, name, note, strippedWorked: true }
+  // 剥离后没找到：人物表里可能真有带括号的名字，用原串兜底
+  const rawHit = await findCharacterRecord(baseToken, raw.trim(), signal)
+  if (rawHit !== undefined) return { recordId: rawHit, name: raw.trim(), strippedWorked: false }
+  return { name, note, strippedWorked: true }
+}
+
 /** 写入章节摘要。返回章节记录 ID。 */
 export async function updateChapterSummary(
   baseToken: string,
@@ -158,9 +201,17 @@ export async function recordCharacterState(
   if (chapterRecordId === undefined) {
     throw new Error(`第 ${chapterNo} 章不存在，无法记录人物状态。`)
   }
-  const characterRecordId = await findCharacterRecord(baseToken, state.character, signal)
+  // 括号注记拆分：`陆铮（重伤）` 按「陆铮」关联；注记不进结构化字段
+  // （physical/emotion 等语义无从猜测），提示模型改用结构化字段表达
+  const resolved = await resolveCharacterFlexible(baseToken, state.character, signal)
+  const characterRecordId = resolved.recordId
   if (characterRecordId === undefined) {
     warnings.push(`人物「${state.character}」不存在于人物表，状态快照未关联人物（仍会记录章节）。`)
+  } else if (resolved.note !== undefined) {
+    warnings.push(
+      `人物按「${resolved.name}」解析成功；括号注记「${resolved.note}」未单独存储，`
+      + '状态信息请直接写入 physical / emotion / location / summary 等字段。',
+    )
   }
 
   // 两段式：batch-create 不支持 link 字段（恒 not_found），标量先建、link 回填
@@ -192,7 +243,11 @@ export interface EventInput {
   summary?: string
   impact?: string
   isTurningPoint?: boolean
-  /** 参与人物姓名列表；不存在的人物会被跳过 */
+  /**
+   * 参与人物列表；不存在的人物会被跳过。
+   * 允许尾随括号注记（如「陆铮（不在场）」）：姓名进 link，
+   * 注记进「参与人物备注」列，两边都不丢。
+   */
   participants?: string[]
 }
 
@@ -202,7 +257,7 @@ export async function recordEvent(
   chapterNo: number,
   event: EventInput,
   signal?: AbortSignal,
-): Promise<{ recordId: string; warnings: string[] }> {
+): Promise<{ recordId: string; warnings: string[]; participantNotes?: string }> {
   const warnings: string[] = []
   const chapterRecordId = await findChapterRecordByNo(baseToken, chapterNo, signal)
   if (chapterRecordId === undefined) {
@@ -219,16 +274,23 @@ export async function recordEvent(
   if (event.impact !== undefined) scalarFields[EVENT_F.IMPACT] = event.impact
   if (event.isTurningPoint !== undefined) scalarFields[EVENT_F.IS_TURNING_POINT] = event.isTurningPoint
 
-  // 参与人物需逐个解析，跳过不存在的
+  // 参与人物逐个解析：姓名（剥离括号注记后）进 link，注记进备注列
   const participantIds: string[] = []
-  for (const name of event.participants ?? []) {
-    const id = await findCharacterRecord(baseToken, name, signal)
-    if (id === undefined) {
-      warnings.push(`参与人物「${name}」不存在，已跳过。`)
-      continue
+  const notes: string[] = []
+  for (const raw of event.participants ?? []) {
+    const resolved = await resolveCharacterFlexible(baseToken, raw, signal)
+    if (resolved.recordId !== undefined) participantIds.push(resolved.recordId)
+    else {
+      warnings.push(
+        resolved.note !== undefined
+          ? `参与人物「${raw}」不存在（已按剥离注记后的「${resolved.name}」查找），已跳过。`
+          : `参与人物「${raw}」不存在，已跳过。`,
+      )
     }
-    participantIds.push(id)
+    if (resolved.note !== undefined) notes.push(`${resolved.name}：${resolved.note}`)
   }
+  if (notes.length > 0) scalarFields[EVENT_F.PARTICIPANT_NOTES] = notes.join('；')
+
   const linkFields: Record<string, string[]> = {
     [EVENT_F.CHAPTER]: [chapterRecordId],
     ...(participantIds.length > 0 ? { [EVENT_F.PARTICIPANTS]: participantIds } : {}),
@@ -238,7 +300,11 @@ export async function recordEvent(
     baseToken, TABLE.EVENT, scalarFields, linkFields, signal,
     (msg) => { warnings.push(msg) },
   )
-  return { recordId, warnings }
+  return {
+    recordId,
+    warnings,
+    ...(notes.length > 0 ? { participantNotes: notes.join('；') } : {}),
+  }
 }
 
 /** 写入卷级或全书摘要。 */

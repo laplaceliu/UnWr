@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import { countWords, maxChapterNo, normalizeContent } from '../src/domain/chapter.ts'
-import { renderSummary } from '../src/domain/memory.ts'
+import { renderSummary, splitParticipantNote } from '../src/domain/memory.ts'
 
 /** 工具定义的最小视图。 */
 interface MinimalTool {
@@ -61,6 +61,23 @@ describe('纯函数（不依赖飞书）', () => {
     expect(text).toContain('【场景】城南酒肆')
     expect(text).toContain('- 沈砚入城')
     expect(text).toContain('【章末状态】线索指向城西')
+  })
+
+  it('splitParticipantNote 拆分尾随括号注记（e2e 实测：整串传入恒匹配失败）', () => {
+    // 实机出现过的三种形态
+    expect(splitParticipantNote('陆铮（不在场）')).toEqual({ name: '陆铮', note: '不在场' })
+    expect(splitParticipantNote('匿名发件人（未识别）')).toEqual({ name: '匿名发件人', note: '未识别' })
+    expect(splitParticipantNote('林警司（三级警司，值班民警）')).toEqual({ name: '林警司', note: '三级警司，值班民警' })
+    // 半角括号与空白
+    expect(splitParticipantNote(' 苏晚棠 (到场) ')).toEqual({ name: '苏晚棠', note: '到场' })
+    // 无注记
+    expect(splitParticipantNote('陆铮')).toEqual({ name: '陆铮' })
+    // 括号不闭合 → 不剥（保守）
+    expect(splitParticipantNote('陆铮（不在场')).toEqual({ name: '陆铮（不在场' })
+    // 整串都在括号里 → 原样返回，不当姓名用
+    expect(splitParticipantNote('（路人）')).toEqual({ name: '（路人）' })
+    // 注记为空 → 视为无注记
+    expect(splitParticipantNote('陆铮（）')).toEqual({ name: '陆铮' })
   })
 })
 

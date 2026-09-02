@@ -132,6 +132,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: EVENT_F.NAME, type: 'text' },
     { name: EVENT_F.STORY_TIME, type: 'text' },
     { name: EVENT_F.LOCATION, type: 'text' },
+    { name: EVENT_F.PARTICIPANT_NOTES, type: 'text' },
     { name: EVENT_F.SUMMARY, type: 'text' },
     { name: EVENT_F.IMPACT, type: 'text' },
     { name: EVENT_F.IS_TURNING_POINT, type: 'checkbox' },

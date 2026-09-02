@@ -127,11 +127,71 @@ export async function createRecordsWithSelfHeal(
 }
 
 /**
+ * 判断 patch 值是否是 link 形状：[{id}] 或 ["recv..."]。
+ * 空数组不算（可能是「清空 link」的合法写入，且无需验证）。
+ */
+function isLinkShape(v: unknown): boolean {
+  if (!Array.isArray(v) || v.length === 0) return false
+  const first = v[0]
+  if (typeof first === 'string') return /^rec[a-zA-Z0-9]{6,}$/.test(first)
+  return typeof first === 'object' && first !== null && 'id' in first
+}
+
+/**
+ * 回填验证：按记录 ID 读回，确认 patch 里的 link 字段真的落库了。
+ *
+ * 为什么必须验证（实机实证 2026-09-02）：对**刚创建**的记录立即
+ * batch-update 回填 link，服务端可能返回 ok:true + record_id_list
+ * 但**静默丢弃写入**——e2e 起草官 10 条事件仅 4 条 link 存活，且
+ * 全程无任何报错。按 ID 的 record-get 能立即看到写入结果，是唯一
+ * 可信的验证手段（record-list 有秒级索引延迟，不能用作验证）。
+ *
+ * 返回缺失清单（如 "recvXXX.参与人物"）；全部落库返回空数组。
+ */
+async function verifyLinkBackfill(
+  baseToken: string,
+  table: string,
+  updates: Readonly<Record<string, Record<string, unknown>>>,
+  signal: AbortSignal | undefined,
+): Promise<string[]> {
+  const { tables } = await base.listTables(baseToken, signal)
+  const t = tables.find((x) => x.name === table)
+  if (t === undefined) return [`${table}(整表不可见)`]
+  // 只验证含 link 形状 patch 的记录，减少读放大
+  const ids = Object.keys(updates).filter((id) => {
+    const patch = updates[id]
+    return patch !== undefined && Object.values(patch).some(isLinkShape)
+  })
+  if (ids.length === 0) return []
+  const rows = base.matrixToObjects(await base.getRecords(baseToken, t.id, ids, signal))
+  const missing: string[] = []
+  for (const id of ids) {
+    const row = rows.find((r) => r['__recordId'] === id)
+    if (row === undefined) {
+      missing.push(`${id}(记录不可见)`)
+      continue
+    }
+    const patch = updates[id]
+    if (patch === undefined) continue
+    for (const [field, v] of Object.entries(patch)) {
+      if (!isLinkShape(v)) continue
+      const current = row[field]
+      if (!Array.isArray(current) || current.length === 0) missing.push(`${id}.${field}`)
+    }
+  }
+  return missing
+}
+
+/**
  * 带自愈的记录更新（link 字段回填等场景）。
  *
  * 实测：新库里 link 字段刚建好就 update 也会报 not_found——
  * 字段本身也需要收敛时间。退避重试 4 次（3s/6s/9s），期间
  * 触发一次 initWork 幂等补齐。
+ *
+ * link 写入额外做**落库验证**：服务端可能静默丢弃对新建记录的
+ * link 更新（见 verifyLinkBackfill），验证不过按重试处理；
+ * 退避耗尽仍失败则抛错（宁可显式失败，不留静默断链的索引）。
  */
 export async function updateRecordsWithSelfHeal(
   baseToken: string,
@@ -144,7 +204,6 @@ export async function updateRecordsWithSelfHeal(
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       await base.updateRecords(baseToken, table, updates as never, signal)
-      return
     } catch (e) {
       if (!(e instanceof FeishuError)) throw e
       // 与 create 对齐：select 选项缺失/未生效 → 强制并集 PUT 后立即重试
@@ -170,8 +229,27 @@ export async function updateRecordsWithSelfHeal(
         const { initWork } = await import('./bootstrap.ts')
         await initWork(baseToken, signal).catch(() => undefined)
       }
+      continue
+    }
+    // 写入报成功——若含 link 形状 patch，验证是否真的落库
+    const missing = await verifyLinkBackfill(baseToken, table, updates, signal)
+      .catch(() => ['(验证读取失败)'])
+    if (missing.length === 0) return
+    if (attempt === 4) {
+      throw new Error(
+        `${table} link 回填未生效（已重试 3 次）：${missing.join('、')}。`
+        + '服务端对新建记录的 link 更新可能被静默丢弃；请稍后重试该写入，'
+        + '或用 novel_read_tool 核对目标记录后手动修复。',
+      )
+    }
+    onHeal?.(`${table} link 回填未落库（${missing.join('、')}），退避重试 ${attempt}/3……`)
+    await new Promise((r) => setTimeout(r, attempt * 3000))
+    if (attempt === 2) {
+      const { initWork } = await import('./bootstrap.ts')
+      await initWork(baseToken, signal).catch(() => undefined)
     }
   }
+  throw new Error(`${table} 更新失败：重试循环异常退出`) // 不可达，类型守卫用
 }
 
 /**
