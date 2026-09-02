@@ -425,12 +425,18 @@ export async function markMemoriesStaleForChapter(
   signal?: AbortSignal,
 ): Promise<{ affected: number; warnings: string[] }> {
   const warnings: string[] = []
+  // 实测坑（2026-09-02 工具体检抓到）：lark-cli record-list 的 --limit
+  // 上限是 200，传 500 直接 invalid arguments。超长作品记忆条目可能
+  // 超过 200 条，届时需改分页拉取；当前先在满页时告警。
   const rows = base.matrixToObjects(
     await base.listRecords(baseToken, TABLE.MEMORY, {
       fieldIds: [MEMORY_F.LEVEL, MEMORY_F.FROM_CHAPTER, MEMORY_F.TO_CHAPTER, MEMORY_F.STALE],
-      limit: 500,
+      limit: 200,
     }, signal),
   )
+  if (rows.length >= 200) {
+    warnings.push(`记忆表已满一页（${rows.length} 条），本次扫描可能不完整——请人工核对或改为分页拉取。`)
+  }
   const updates: Record<string, { [MEMORY_F.STALE]: true }> = {}
   for (const row of rows) {
     const lvl = String(row[MEMORY_F.LEVEL] ?? '')

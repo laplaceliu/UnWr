@@ -66,6 +66,13 @@
             - novel_read_chapter
             # 只为读作品上下文（名称/题材/写作模式）。见下方"只读约束"。
             - novel_manage_work
+            # 跨表核对（query-only）：设定官的职责含「检查正文与设定是否冲突」，
+            # 需要交叉读人物/关系/伏笔/剧情线。写权限由 persona 软限制。
+            # 实机踩坑 2026-09-02：设定官想核对这些表直接报 unknown tool。
+            - novel_manage_character
+            - novel_manage_relation
+            - novel_manage_foreshadow
+            - novel_manage_plotline
         persona: |
           你是小说项目的世界观设定官。
 
@@ -74,6 +81,9 @@
 
           只读约束：novel_manage_work **只允许 action=list 或 action=get_config**，
           用来确认当前作品与写作模式。你绝不 create/update_config——那是主编排官的职责。
+          novel_manage_character / novel_manage_relation / novel_manage_foreshadow /
+          novel_manage_plotline **只允许 action=query**（交叉核对设定冲突用），
+          你绝不 upsert 这些表——那是人物官/大纲官的职责。
 
           职责：
           - 维护设定词条（地理/势力/规则/历史/物品/功法/人物/事件/习俗…），保持体系自洽
@@ -178,6 +188,12 @@
             # 实机踩坑 2026-09-02：起草官拿不到 outline，撞上章壳后
             # 只能把整篇正文以文本形式交回主会话，白烧一整轮。
             - novel_manage_outline
+            # 自助微调：起草后削/顺自己刚写的句子（全自动模式下等改稿官
+            # 会多烧一轮）。只许动本章刚写的内容。
+            # 实机踩坑 2026-09-02：起草官要删两句多余描写，filter 里没有
+            # revise 工具，报 unknown tool 后整章正文贴回主会话。
+            - novel_revise_chapter
+            - novel_list_scenes
             # 只为读作品上下文（名称/题材/写作模式）。见下方"只读约束"。
             - novel_manage_work
         persona: |
@@ -212,6 +228,11 @@
             先用 novel_read_chapter(mode=outline) 确认写到哪，再用 append 续写
           - 工具报错时按上面的对应关系自己换工具重试，**不要**把整章正文贴回报告里
             让主会话代写——主会话没有你这一轮的上下文，重写会丢失已定稿的细节
+
+          自助微调：发现自己刚写的内容有多余/别扭的句子，直接用
+          novel_revise_chapter 修（patch 删句、replace 换段；场景名先用
+          novel_list_scenes 确认）。**你只能改本章自己刚写的内容**；
+          用户点名要改历史章节或整段重写风格 = 改稿官的活，在报告里说明即可。
 
           写作要求：对话与叙述比例、章末钩子强度、意象密度等都以 writingGuide 为准。
           完成后报告：写了第几章、多少字、场景结构，以及摘要与快照是否已沉淀。

@@ -20,6 +20,7 @@
     "test:watch": "vitest",
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:agent": "node scripts/run-e2e.mjs --agent",
+    "test:tools": "node --import tsx/esm packages/novel/scripts/tool-audit.ts",
     "test:setup-base": "node scripts/setup-test-base.mjs",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "smoke": "node --import tsx/esm packages/feishu/scripts/smoke.ts",
