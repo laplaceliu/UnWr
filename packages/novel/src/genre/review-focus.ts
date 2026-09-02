@@ -16,6 +16,7 @@
 
 import type { GenrePreset } from '@unwr/schema'
 import { ISSUE_TYPE } from '../domain/consistency.ts'
+import { TABOO_TIER_RULES, renderTabooChecklist } from './taboos.ts'
 
 /** 评审重点包（novel_get_review_focus 的返回形状）。 */
 export interface ReviewFocus {
@@ -85,7 +86,14 @@ export function renderReviewFocus(p: GenrePreset): ReviewFocus {
       weight: it.weight,
     })),
     blockingThreshold: p.consistency_weights.blocking_threshold,
+    // 红线排在最前且不带题材权重：它不参与 consistency_weights 的排序竞争。
+    // 按等级分档——严禁/高危阻断定稿，审慎仅提示，见 TABOO_TIER_RULES。
     checklist: [
+      '【最高优先级·内容红线】与题材无关，按严重程度分三档，条目按档位从重到轻排列：',
+      ...renderTabooChecklist().map((it) => `  ${it}`),
+      `  归档方式：按条目标注的档位选择问题类型「内容红线·${TABOO_TIER_RULES.fatal.label}」`
+        + `／「内容红线·${TABOO_TIER_RULES.high.label}」／「内容红线·${TABOO_TIER_RULES.caution.label}」，`
+        + '严重度由系统按档位自动裁定，你只需选对档位。',
       ...weighted.map((it) => `[权重 ${it.weight.toFixed(2)}] ${it.label}`),
       'H7 前后矛盾：本章陈述是否与历史章节摘要冲突？（无题材权重，固定检查）',
     ],
@@ -101,6 +109,12 @@ export function renderReviewFocus(p: GenrePreset): ReviewFocus {
 export function weightForIssueType(type: string, p: GenrePreset): number {
   const w = p.consistency_weights
   switch (type) {
+    // 红线按**等级**取排序权重：严禁 > 高危 > 一致性问题 > 审慎。
+    // 审慎档刻意压到 0.5（低于主流一致性权重），因为它是提示不是告警，
+    // 不该盖在真正的一致性问题前面。
+    case ISSUE_TYPE.TABOO_FATAL: return TABOO_TIER_RULES.fatal.sortWeight
+    case ISSUE_TYPE.TABOO_HIGH: return TABOO_TIER_RULES.high.sortWeight
+    case ISSUE_TYPE.TABOO_CAUTION: return TABOO_TIER_RULES.caution.sortWeight
     case ISSUE_TYPE.SETTING_CONFLICT: return w.w_setting_conflict
     case ISSUE_TYPE.CHARACTER_BREAK:
     case ISSUE_TYPE.ADDRESS: return w.w_character_break

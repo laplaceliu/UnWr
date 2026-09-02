@@ -17,6 +17,7 @@
  */
 
 import { base } from '@unwr/feishu'
+import { TABOO_TIER_RULES, tabooTierFromType } from '../genre/taboos.ts'
 import {
   CHARACTER_F, CHAPTER_F, EVENT_F, FORESHADOW_F, ISSUE_F,
   TABLE,
@@ -32,6 +33,15 @@ export const ISSUE_TYPE = {
   TIMELINE: '时间线矛盾',
   PRESENCE: '方位矛盾',
   ADDRESS: '称谓不一致',
+  /**
+   * 内容红线·严禁（呈现即违规，无合法框架，三套题材下都阻断定稿）。
+   * 分档依据与完整清单见 genre/taboos.ts，本处只登记落库用的类型名。
+   */
+  TABOO_FATAL: '内容红线·严禁',
+  /** 内容红线·高危（内容可写但须满足强约束，三套题材下都阻断定稿）。 */
+  TABOO_HIGH: '内容红线·高危',
+  /** 内容红线·审慎（技巧规避即可，仅提示，三套题材下都不阻断定稿）。 */
+  TABOO_CAUTION: '内容红线·审慎',
 } as const
 
 /** 处理状态。 */
@@ -57,6 +67,24 @@ export interface Issue {
   character?: string
   /** 置信度：1.0 = 规则确定；<1.0 = 需人工/模型确认 */
   confidence: number
+}
+
+/**
+ * 校正红线问题的严重度：**由等级决定，不采信模型自报的数字**。
+ *
+ * 为什么需要这道校正：`blocking = severity >= threshold`（阈值随题材 3/2/4 变），
+ * 若严重度由模型自由填写，「严禁」档可能被填成 2，在网文（阈值 3）下就
+ * 悄悄不阻断了——分级形同虚设。
+ *
+ * 模型对 1-5 的数字约定遵循得很差，但选「严禁/高危/审慎」这档判断很稳，
+ * 所以让模型只负责选档，数值由这里统一裁决。
+ *
+ * 非红线问题原样返回。
+ */
+export function normalizeIssueSeverity(issue: Issue): Issue {
+  const tier = tabooTierFromType(issue.type)
+  if (tier === undefined) return issue
+  return { ...issue, severity: TABOO_TIER_RULES[tier].issueSeverity }
 }
 
 /** 检查入参。 */
@@ -407,6 +435,10 @@ export async function persistIssues(
   issues: readonly Issue[],
   signal?: AbortSignal,
 ): Promise<{ created: number; skipped: number }> {
+  // 落库前统一校正：红线严重度由等级决定，不采信调用方传入的数字。
+  // 这里是所有写入路径的收口，保证库里的红线问题严重度恒定可比。
+  issues = issues.map(normalizeIssueSeverity)
+
   if (issues.length === 0) return { created: 0, skipped: 0 }
 
   // 先读已有问题，按标题去重（避免重复检查刷屏）

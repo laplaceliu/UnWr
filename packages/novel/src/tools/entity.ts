@@ -193,6 +193,7 @@ function registerOutline(ctx: Context): void {
           items: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { no: { type: 'number', required: true }, title: { type: 'string', required: true }, status: { type: 'string' }, outline: { type: 'string' }, words: { type: 'number' } } } },
           recordId: { type: 'string' },
           updated: { type: 'boolean' },
+          created: { type: 'boolean', description: 'true = the chapter shell was auto-created by set_chapter_outline.' },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
@@ -219,7 +220,7 @@ function registerOutline(ctx: Context): void {
           ...args.volume === undefined ? {} : { volume: args.volume },
           ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
         }, exec.signal)
-        return { action: args.action, total: 1, items: [], recordId: r.recordId }
+        return { action: args.action, total: 1, items: [], recordId: r.recordId, created: r.created }
       }
 
       if (args.volume === undefined || args.volume === '') {

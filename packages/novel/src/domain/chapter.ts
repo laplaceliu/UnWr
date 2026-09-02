@@ -20,7 +20,7 @@ import {
 import type { ChapterStatus } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import { extractDocToken } from '../context/builder.ts'
-import { resolveChapterMount, findVolumeRecordId } from './organize.ts'
+import { resolveChapterMount, findVolumeRecordId, rememberChapterRecordId } from './organize.ts'
 import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
@@ -260,6 +260,9 @@ export async function writeChapter(
   if (recordId === undefined) {
     throw new Error('章节记录创建失败：未返回 record_id')
   }
+  // 种写后缓存：紧随其后的 revise/append/query 要能立刻找到这章
+  //（列表索引有 ~6s 延迟，见 entity.ts findChapterRecordId）
+  rememberChapterRecordId(baseToken, chapterNo, recordId)
 
   // 回填「所属卷」link（等卷记录可见后）
   if (pendingVolumeLink !== undefined) {

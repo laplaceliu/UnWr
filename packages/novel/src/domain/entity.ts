@@ -14,10 +14,13 @@
 import { base } from '@unwr/feishu'
 import type { CellValue } from '@unwr/feishu'
 import {
-  BRANCH_F, CHARACTER_F, CHAPTER_F, FORESHADOW_F, MEMORY_F, MEMORY_LEVEL,
+  BRANCH_F, CHAPTER_STATUS, CHARACTER_F, CHAPTER_F, FORESHADOW_F, MEMORY_F, MEMORY_LEVEL,
   PLOTLINE_F, RELATION_F, SETTING_F, TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
+import {
+  findChapterRecordIdCached, rememberChapterRecordId,
+} from './organize.ts'
 
 /**
  * 确保 select 字段包含将写入的选项（缺失则合并进字段定义）。
@@ -63,7 +66,7 @@ async function ensureSelectOptions(
     signal,
   )
 }
-import { createRecordsWithSelfHeal } from './selfheal.ts'
+import { createRecordWithLinks, createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /** 可写入的字段集合（可变，便于逐字段赋值）。 */
 type Fields = Record<string, CellValue>
@@ -293,23 +296,84 @@ export async function upsertVolume(
   return upsert(baseToken, TABLE.VOLUME, VOLUME_F.NAME, input.name, fields, signal)
 }
 
-/** 写入某章的大纲要点。章节不存在时抛错。 */
+/**
+ * 写入某章的大纲要点。
+ *
+ * 章节不存在时**自动创建章壳**（状态=大纲、标题=第 N 章）——大纲官先规划
+ * 整卷章纲是自然工作流，此前"先建章再写大纲"的强制顺序曾让大纲官在
+ * 章节创建前批量写章纲全部被拒（实机 2026-09-02 ×8）。
+ *
+ * 卷名是 link 字段（→ 卷表）：卷不存在时自动建同名卷壳，随后可由
+ * upsert_volume 充实。
+ */
 export async function setChapterOutline(
   baseToken: string,
   chapterNo: number,
   outline: string,
   options: { volume?: string; storyTime?: string } = {},
   signal?: AbortSignal,
-): Promise<{ recordId: string; chapterNo: number }> {
+): Promise<{ recordId: string; chapterNo: number; created: boolean }> {
+  const warnings: string[] = []
   const recordId = await findChapterRecordId(baseToken, chapterNo, signal)
-  if (recordId === undefined) {
-    throw new Error(`第 ${chapterNo} 章不存在，无法写入大纲。请先用 novel_write_chapter 创建。`)
+  if (recordId !== undefined) {
+    // 已有章节：直接 update。VOLUME 是 link → 解析卷名（缺卷则建壳）
+    const fields: Fields = { [CHAPTER_F.OUTLINE]: outline }
+    const volumeId = options.volume === undefined
+      ? undefined
+      : await ensureVolumeRecord(baseToken, options.volume, signal)
+    if (volumeId !== undefined) fields[CHAPTER_F.VOLUME] = [{ id: volumeId }]
+    if (options.storyTime !== undefined) fields[CHAPTER_F.STORY_TIME] = options.storyTime
+    // 可能含 VOLUME link（且卷壳是刚建的）→ 走自愈版防 800030201
+    await updateRecordsWithSelfHeal(baseToken, TABLE.CHAPTER, { [recordId]: fields }, signal, () => {})
+    return { recordId, chapterNo, created: false }
   }
-  const fields: Fields = { [CHAPTER_F.OUTLINE]: outline }
-  if (options.volume !== undefined) fields[CHAPTER_F.VOLUME] = options.volume
-  if (options.storyTime !== undefined) fields[CHAPTER_F.STORY_TIME] = options.storyTime
-  await base.updateRecords(baseToken, TABLE.CHAPTER, { [recordId]: fields }, signal)
-  return { recordId, chapterNo }
+
+  // 自动建章：标量（NO/TITLE/OUTLINE/STATUS/STORY_TIME）+ VOLUME link 回填
+  const scalarFields: Fields = {
+    [CHAPTER_F.NO]: chapterNo,
+    [CHAPTER_F.TITLE]: `第 ${chapterNo} 章`,
+    [CHAPTER_F.OUTLINE]: outline,
+    [CHAPTER_F.STATUS]: [CHAPTER_STATUS.OUTLINE],
+  }
+  if (options.storyTime !== undefined) scalarFields[CHAPTER_F.STORY_TIME] = options.storyTime
+  const volumeId = options.volume === undefined
+    ? undefined
+    : await ensureVolumeRecord(baseToken, options.volume, signal)
+  const newRecordId = await createRecordWithLinks(
+    baseToken, TABLE.CHAPTER, scalarFields,
+    volumeId === undefined ? {} : { [CHAPTER_F.VOLUME]: [volumeId] },
+    signal, (msg) => { warnings.push(msg) },
+  )
+  if (warnings.length > 0) {
+    console.warn(`[setChapterOutline] 第 ${chapterNo} 章自动建章警告:`, warnings.join('；'))
+  }
+  // 种写后缓存：紧随其后的二次写纲/起草要能立刻找到这章
+  rememberChapterRecordId(baseToken, chapterNo, newRecordId)
+  return { recordId: newRecordId, chapterNo, created: true }
+}
+
+/** 按卷名查找卷记录 id；不存在时创建同名卷壳（待 upsert_volume 充实）。 */
+async function ensureVolumeRecord(
+  baseToken: string,
+  volumeName: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.VOLUME, {
+      fieldIds: [VOLUME_F.NAME],
+      filter: { logic: 'and', conditions: [[VOLUME_F.NAME, '==', volumeName]] },
+      limit: 1,
+    }, signal),
+  )
+  const existing = rows[0]?.['__recordId']
+  if (typeof existing === 'string') return existing
+  const ids = await createRecordsWithSelfHeal(
+    baseToken, TABLE.VOLUME,
+    [{ [VOLUME_F.NAME]: volumeName }], signal, () => {},
+  )
+  const id = ids[0]
+  if (id === undefined) throw new Error(`卷「${volumeName}」创建失败：未返回 record_id`)
+  return id
 }
 
 /**
@@ -395,12 +459,20 @@ export async function markMemoriesStaleForChapter(
 }
 
 /** 按章节号取章节记录 ID。 */
+/**
+ * 章节号 → record ID。带写后缓存（见 organize.ts——create+update 两段式
+ * 写入后列表索引有 ~6s 延迟，无缓存时写后立即查会扑空）。
+ */
 export async function findChapterRecordId(
   baseToken: string,
   chapterNo: number,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
-  return findBy(baseToken, TABLE.CHAPTER, CHAPTER_F.NO, chapterNo, signal)
+  return findChapterRecordIdCached(
+    baseToken, chapterNo,
+    (bt, no, sig) => findBy(bt, TABLE.CHAPTER, CHAPTER_F.NO, no, sig),
+    signal,
+  )
 }
 
 /** 查询章节大纲（按章节号升序）。 */
@@ -588,6 +660,48 @@ export async function queryBranches(
 /* 人物关系                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 关系去重缓存（写后即记，TTL 60s）。
+ *
+ * 为什么需要：关系记录走「create 标量 + update 回填 link」两段式，写入后
+ * 列表索引有 ~6s 延迟（实机 2026-09-02：awaitVisible 等 6.1s 仍查不到）。
+ * 期间同对人物的再次 upsert 走 findRelation（列表读）查不到 → 重复建档。
+ * 缓存命中时按 record ID 直读（getRecords，无列表索引延迟）校验软删除戳，
+ * 完全绕开列表延迟窗口。
+ *
+ * 局限：仅进程内有效。人物官是唯一写方且单委托内串行调用，实际足够。
+ */
+const relationCache = new Map<string, { recordId: string; at: number }>()
+const RELATION_CACHE_TTL = 60_000
+const RELATION_CACHE_MAX = 200
+
+const relationCacheKey = (a: string, b: string, type: string): string => `${a}|${b}|${type}`
+
+function relationCacheGet(key: string): string | undefined {
+  const entry = relationCache.get(key)
+  if (entry === undefined) return undefined
+  if (Date.now() - entry.at > RELATION_CACHE_TTL) {
+    relationCache.delete(key)
+    return undefined
+  }
+  return entry.recordId
+}
+
+function relationCacheSet(key: string, recordId: string): void {
+  if (relationCache.size >= RELATION_CACHE_MAX) {
+    // 淘汰最早写入的一条
+    const oldest = [...relationCache.entries()]
+      .sort((x, y) => x[1].at - y[1].at)[0]
+    if (oldest !== undefined) relationCache.delete(oldest[0])
+  }
+  relationCache.set(key, { recordId, at: Date.now() })
+}
+
+/** 测试钩子：清空去重缓存（relation-dedup.spec 每个用例间隔离用）。 */
+export function clearRelationCacheForTests(): void {
+  relationCache.clear()
+}
+
 export interface RelationInput {
   /** 人物 A 的姓名（必须是 CHARACTER 表里已有的）。 */
   characterA: string
@@ -612,30 +726,95 @@ const hasDeleteStamp = (description: unknown): boolean =>
   typeof description === 'string' && description.includes('[已删除]')
 
 /**
- * 读取关系现有描述与状态（用于软删除戳检测）。
+ * 从 link 字段单元格提取 record ID 列表。
+ * 飞书 link 字段读出来是 [{id}] 数组（旧数据/部分接口可能是裸字符串数组）。
+ */
+function linkIds(v: unknown): string[] {
+  if (!Array.isArray(v)) return typeof v === 'string' && v !== '' ? [v] : []
+  return v.map((x) =>
+    typeof x === 'object' && x !== null && 'id' in x
+      ? String((x as { id: unknown }).id)
+      : String(x),
+  ).filter((s) => s !== '')
+}
+
+/**
+ * 批量解析人物姓名 → record ID。
+ *
+ * 为什么必须转 ID：RELATION_F.A/B 是**双向关联字段**（link 到 CHARACTER 表），
+ * 飞书 link 字段只接受 record ID（写入格式 [{id}]）。直接写姓名字符串会报
+ * not_found——实机踩坑 2026-09-02：人物官连续 12 次 upsertRelation 全部
+ * not_found，就是因为验证过姓名存在后仍把姓名写进了 link 字段。
+ */
+async function resolveCharacterIdMap(
+  baseToken: string,
+  names: readonly string[],
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const rows = base.matrixToObjects(
+    await base.listAllRecords(baseToken, TABLE.CHARACTER, {
+      fieldIds: [CHARACTER_F.NAME],
+    }, signal),
+  )
+  const map = new Map<string, string>()
+  for (const r of rows) {
+    const name = str(r[CHARACTER_F.NAME])
+    const rid = str(r['__recordId'])
+    if (name !== '' && rid !== '') map.set(name, rid)
+  }
+  const missing = [...new Set(names)].filter((n) => !map.has(n))
+  if (missing.length > 0) {
+    throw new Error(
+      `人物「${missing.join('」「')}」在 CHARACTER 表中不存在。`
+      + `请先用 novel_manage_character(action=upsert) 建档。`,
+    )
+  }
+  return map
+}
+
+/**
+ * 按 record ID 直读关系描述与状态（软删除戳检测的缓存路径）。
+ *
+ * getRecords 按ID读取不经过列表索引，无 ~6s 写入延迟；
+ * 记录不存在时返回 undefined（调用方据此失效缓存）。
+ */
+async function readRelationMetaById(
+  baseToken: string,
+  recordId: string,
+  signal?: AbortSignal,
+): Promise<{ description: string; status: string } | undefined> {
+  const rows = base.matrixToObjects(
+    await base.getRecords(baseToken, TABLE.RELATION, [recordId], signal),
+  )
+  const row = rows.find((r) => str(r['__recordId']) === recordId)
+  if (row === undefined) return undefined
+  return {
+    description: str(row[RELATION_F.DESCRIPTION]),
+    status: firstStr(row[RELATION_F.STATUS]),
+  }
+}
+
+/**
+ * 读取关系现有描述与状态（用于软删除戳检测）。aId/bId 是 CHARACTER record ID。
  */
 async function readRelationMeta(
   baseToken: string,
-  a: string,
-  b: string,
+  aId: string,
+  bId: string,
   type: string,
   signal?: AbortSignal,
 ): Promise<{ description: string; status: string } | undefined> {
   const rows = base.matrixToObjects(
-    await base.listRecords(baseToken, TABLE.RELATION, {
-      fieldIds: [RELATION_F.DESCRIPTION, RELATION_F.STATUS],
-      filter: {
-        logic: 'and',
-        conditions: [
-          [RELATION_F.A, '==', a],
-          [RELATION_F.B, '==', b],
-          [RELATION_F.TYPE, '==', type],
-        ],
-      },
-      limit: 1,
-    }, signal),
+    // 不传 fieldIds：CLI 对 link 字段名的 --field-id 投影会静默 ignore
+    // （实机 2026-09-02：--field-id 人物A 被丢弃，link 列缺失）。
+    // 关系表是窄表，全字段拉取代价可忽略。
+    await base.listAllRecords(baseToken, TABLE.RELATION, {}, signal),
   )
-  const row = rows[0]
+  const row = rows.find((r) => {
+    const ra = linkIds(r[RELATION_F.A])[0]
+    const rb = linkIds(r[RELATION_F.B])[0]
+    return ra === aId && rb === bId && firstStr(r[RELATION_F.TYPE]) === type
+  })
   if (row === undefined) return undefined
   return {
     description: str(row[RELATION_F.DESCRIPTION]),
@@ -672,62 +851,75 @@ export async function upsertRelation(
     throw new Error('characterA 与 characterB 不能相同——人物不可能与自己建立关系。')
   }
 
-  // 验证人物存在——避免关系指向幽灵角色。
-  const allChars = base.matrixToObjects(
-    await base.listAllRecords(baseToken, TABLE.CHARACTER, {
-      fieldIds: [CHARACTER_F.NAME],
-    }, signal),
+  // 解析姓名 → record ID（顺带验证人物存在，避免关系指向幽灵角色）。
+  const ids = await resolveCharacterIdMap(
+    baseToken, [input.characterA, input.characterB], signal,
   )
-  const charNames = new Set(
-    allChars
-      .map((r) => str(r[CHARACTER_F.NAME]))
-      .filter((n) => n !== ''),
-  )
-  if (!charNames.has(input.characterA)) {
-    throw new Error(
-      `人物「${input.characterA}」在 CHARACTER 表中不存在。`
-      + `请先用 novel_manage_character(action=upsert) 建档。`,
-    )
+  const idA = ids.get(input.characterA) as string
+  const idB = ids.get(input.characterB) as string
+
+  // 归一：按 record ID 字典序排序后再查，避免「A→B」与「B→A」重复入库
+  //（用 ID 而非姓名做去重 key，人物改名不会产生重复关系）。
+  const sortedPair: string[] = [idA, idB].sort((x, y) => x.localeCompare(y))
+  const a: string = sortedPair[0] ?? idA
+  const b: string = sortedPair[1] ?? idB
+
+  // 去重三级查找：进程内缓存（无延迟）→ 按ID校验 → 列表 findRelation（有 ~6s 窗口）
+  const cacheKey = relationCacheKey(a, b, input.type)
+  let existing: string | undefined
+  let existingMeta: { description: string; status: string } | undefined
+
+  const cached = relationCacheGet(cacheKey)
+  if (cached !== undefined) {
+    existingMeta = await readRelationMetaById(baseToken, cached, signal)
+    if (existingMeta !== undefined) {
+      existing = cached
+    } else {
+      // 缓存指向的记录已不存在（被物理删除/外部清库）→ 失效并回退列表查找
+      relationCache.delete(cacheKey)
+    }
   }
-  if (!charNames.has(input.characterB)) {
-    throw new Error(
-      `人物「${input.characterB}」在 CHARACTER 表中不存在。`
-      + `请先用 novel_manage_character(action=upsert) 建档。`,
-    )
+  if (existing === undefined) {
+    existing = await findRelation(baseToken, a, b, input.type, signal)
+    if (existing !== undefined) {
+      existingMeta = await readRelationMeta(baseToken, a, b, input.type, signal)
+    }
   }
 
-  // 归一：A/B 字典序排序后再查，避免「李寻欢→阿飞」与「阿飞→李寻欢」重复入库。
-  const sortedPair: string[] = [input.characterA, input.characterB].sort((x, y) => x.localeCompare(y, 'zh-Hans-CN'))
-  const a: string = sortedPair[0] ?? input.characterA
-  const b: string = sortedPair[1] ?? input.characterB
-
-  const existing = await findRelation(baseToken, a, b, input.type, signal)
-  const existingMeta = existing !== undefined
-    ? await readRelationMeta(baseToken, a, b, input.type, signal)
-    : undefined
   const wasDeleted = existingMeta !== undefined
     && (hasDeleteStamp(existingMeta.description) || existingMeta.status === '已破裂')
   const skipPreserve = wasDeleted && input.force !== true
 
-  const fields: Fields = {
-    [RELATION_F.A]: a,
-    [RELATION_F.B]: b,
+  // START_CHAPTER 也是 link 字段（→ 章节表）：章节号解析为 record id，
+  // 章节不存在时降级为 warning（关系本身仍入库）。
+  const warnings: string[] = []
+  let startChapterId: string | undefined
+  if (input.startChapter !== undefined && input.startChapter > 0) {
+    startChapterId = await findChapterRecordId(baseToken, input.startChapter, signal)
+    if (startChapterId === undefined) {
+      warnings.push(`起始章节第 ${input.startChapter} 章不存在，START_CHAPTER 关联未写入。`)
+    }
+  }
+
+  // 标量字段（create 用）；A/B/START_CHAPTER 是 link，走回填
+  const scalarFields: Fields = {
     [RELATION_F.TYPE]: [input.type],
   }
   if (input.description !== undefined && input.description !== '') {
     // 软删除戳保护：保留 [已删除] 戳不被常规 upsert 抹平
     if (!skipPreserve) {
-      fields[RELATION_F.DESCRIPTION] = input.description
+      scalarFields[RELATION_F.DESCRIPTION] = input.description
     }
-  }
-  if (input.startChapter !== undefined && input.startChapter > 0) {
-    // 起始章节允许在删除戳存在时仍然更新（用于"关系从 X 章重新发生"）
-    fields[RELATION_F.START_CHAPTER] = input.startChapter
   }
   if (input.status !== undefined && input.status !== '') {
     if (!skipPreserve) {
-      fields[RELATION_F.STATUS] = [input.status]
+      scalarFields[RELATION_F.STATUS] = [input.status]
     }
+  }
+  const linkFields: Record<string, string[]> = {
+    [RELATION_F.A]: [a],
+    [RELATION_F.B]: [b],
+    ...(startChapterId === undefined ? {} : { [RELATION_F.START_CHAPTER]: [startChapterId] }),
   }
 
   const preservedWarning = skipPreserve
@@ -735,18 +927,27 @@ export async function upsertRelation(
     : []
 
   if (existing !== undefined) {
-    await base.updateRecords(baseToken, TABLE.RELATION, { [existing]: fields }, signal)
-    return { recordId: existing, updated: true, warnings: preservedWarning }
+    // update 可以直接写 link（实证 OK），与 create 的两段式不同
+    const patch: Fields = {
+      [RELATION_F.A]: [{ id: a }],
+      [RELATION_F.B]: [{ id: b }],
+      ...(startChapterId === undefined ? {} : { [RELATION_F.START_CHAPTER]: [{ id: startChapterId }] }),
+      ...scalarFields,
+    }
+    // 含 link 字段（A/B/START_CHAPTER）→ 必须走自愈版：新库 link 字段
+    // 收敛期会报 800030201（实机 2026-09-02：裸调用在反向 upsert 时炸）
+    await updateRecordsWithSelfHeal(baseToken, TABLE.RELATION, { [existing]: patch }, signal, (msg: string) => {
+      warnings.push(msg)
+    })
+    relationCacheSet(cacheKey, existing)
+    return { recordId: existing, updated: true, warnings: [...preservedWarning, ...warnings] }
   }
 
-  const warnings: string[] = []
-  const ids = await createRecordsWithSelfHeal(baseToken, TABLE.RELATION, [fields], signal, (msg) => {
-    warnings.push(msg)
-  })
-  const recordId = ids[0]
-  if (recordId === undefined) {
-    throw new Error(`${TABLE.RELATION} 记录创建失败：未返回 record_id`)
-  }
+  const recordId = await createRecordWithLinks(
+    baseToken, TABLE.RELATION, scalarFields, linkFields, signal,
+    (msg) => { warnings.push(msg) },
+  )
+  relationCacheSet(cacheKey, recordId)
 
   await awaitVisible(
     async () => (await findRelation(baseToken, a, b, input.type, signal)) === recordId,
@@ -758,32 +959,31 @@ export async function upsertRelation(
 }
 
 /**
- * 按（归一后的 A,B,type）查找关系记录 ID。查不到返回 undefined。
+ * 按（归一后的 A,B,type）查找关系记录 ID。aId/bId 是 CHARACTER record ID。
+ * 查不到返回 undefined。
+ *
+ * 为什么本地过滤而不下推 filter：飞书 bitable 的 **link 字段不支持
+ * `==` 值过滤**（实机报 800030201 not_found，2026-09-02）——即便值是
+ * record ID 也不行。关系表量级很小（数十条），全量拉取后本地比对，
+ * 顺带绕开 select 字段过滤在 list 层的各种怪癖。
  */
 async function findRelation(
   baseToken: string,
-  a: string,
-  b: string,
+  aId: string,
+  bId: string,
   type: string,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
-  // RELATION_F.TYPE 是单选 select → 字段存为数组（与 SETTING_F.CATEGORY 同形），
-  // 飞书 list 过滤时按单字符串处理即可（select 单选在 list 层是普通字符串）。
   const rows = base.matrixToObjects(
-    await base.listRecords(baseToken, TABLE.RELATION, {
-      fieldIds: [RELATION_F.A, RELATION_F.B, RELATION_F.TYPE],
-      filter: {
-        logic: 'and',
-        conditions: [
-          [RELATION_F.A, '==', a],
-          [RELATION_F.B, '==', b],
-          [RELATION_F.TYPE, '==', type],
-        ],
-      },
-      limit: 1,
-    }, signal),
+    // 不传 fieldIds：link 字段名的投影会被 CLI 静默 ignore（见 readRelationMeta）
+    await base.listAllRecords(baseToken, TABLE.RELATION, {}, signal),
   )
-  const id = rows[0]?.['__recordId']
+  const hit = rows.find((r) => {
+    const ra = linkIds(r[RELATION_F.A])[0]
+    const rb = linkIds(r[RELATION_F.B])[0]
+    return ra === aId && rb === bId && firstStr(r[RELATION_F.TYPE]) === type
+  })
+  const id = hit?.['__recordId']
   return typeof id === 'string' ? id : undefined
 }
 
@@ -803,18 +1003,21 @@ export async function queryRelations(
   signal?: AbortSignal,
 ): Promise<RelationRow[]> {
   const rows = base.matrixToObjects(
-    await base.listAllRecords(baseToken, TABLE.RELATION, {
-      fieldIds: [
-        RELATION_F.A, RELATION_F.B, RELATION_F.TYPE,
-        RELATION_F.STATUS, RELATION_F.DESCRIPTION, RELATION_F.START_CHAPTER,
-      ],
-    }, signal),
+    // 不传 fieldIds：link 字段名的投影会被 CLI 静默 ignore（见 readRelationMeta）
+    await base.listAllRecords(baseToken, TABLE.RELATION, {}, signal),
   )
+
+  // A/B 是 link 字段（存 record ID）→ 反解为姓名输出。
+  const idToName = await characterNameMap(baseToken, signal)
+  const nameOf = (v: unknown): string => {
+    const first = linkIds(v)[0]
+    return first !== undefined ? (idToName.get(first) ?? first) : ''
+  }
 
   return rows
     .map((r) => ({
-      a: str(r[RELATION_F.A]),
-      b: str(r[RELATION_F.B]),
+      a: nameOf(r[RELATION_F.A]),
+      b: nameOf(r[RELATION_F.B]),
       type: firstStr(r[RELATION_F.TYPE]),
       status: firstStr(r[RELATION_F.STATUS]),
       description: str(r[RELATION_F.DESCRIPTION]),
@@ -825,6 +1028,25 @@ export async function queryRelations(
     .filter((rel) => options.type === undefined || rel.type === options.type)
     .filter((rel) => options.status === undefined || rel.status === options.status)
     .sort((x, y) => x.a.localeCompare(y.a, 'zh-Hans-CN') || x.b.localeCompare(y.b, 'zh-Hans-CN'))
+}
+
+/** CHARACTER record ID → 姓名 映射（queryRelations 反解 link 字段用）。 */
+async function characterNameMap(
+  baseToken: string,
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const rows = base.matrixToObjects(
+    await base.listAllRecords(baseToken, TABLE.CHARACTER, {
+      fieldIds: [CHARACTER_F.NAME],
+    }, signal),
+  )
+  const map = new Map<string, string>()
+  for (const r of rows) {
+    const name = str(r[CHARACTER_F.NAME])
+    const rid = str(r['__recordId'])
+    if (name !== '' && rid !== '') map.set(rid, name)
+  }
+  return map
 }
 
 /**
@@ -841,9 +1063,13 @@ export async function deleteRelation(
   type: string,
   signal?: AbortSignal,
 ): Promise<{ recordId: string | null }> {
-  const sortedPair: string[] = [characterA, characterB].sort((x, y) => x.localeCompare(y, 'zh-Hans-CN'))
-  const a: string = sortedPair[0] ?? characterA
-  const b: string = sortedPair[1] ?? characterB
+  const ids = await resolveCharacterIdMap(
+    baseToken, [characterA, characterB], signal,
+  )
+  const sortedPair: string[] = [ids.get(characterA) ?? '', ids.get(characterB) ?? '']
+    .sort((x, y) => x.localeCompare(y))
+  const a: string = sortedPair[0] ?? ''
+  const b: string = sortedPair[1] ?? ''
   const existing = await findRelation(baseToken, a, b, type, signal)
   if (existing === undefined) {
     return { recordId: null }

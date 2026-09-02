@@ -178,3 +178,64 @@ export async function resolveChapterMount(
 
 const str = (v: unknown): string =>
   typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v)
+
+/* ------------------------------------------------------------------ */
+/* 章节号 → record ID 写后缓存                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 章节记录的「读自己的写」缓存（TTL 60s，容量 200）。
+ *
+ * 为什么需要：create+update 两段式写入后，飞书 Base 的列表索引有 ~6s
+ * 延迟（实机 2026-09-02：awaitVisible 等 6.1s 仍查不到）。期间按章节号
+ * 列表查找会扑空，导致 set_chapter_outline 重复建章壳、write_chapter
+ * 误判章不存在、revise/append 报"章不存在"。
+ *
+ * 写入方（writeChapter / setChapterOutline 自动建章）在 create 成功后
+ * 调用 rememberChapterRecordId 种缓存；读取方 findChapterRecordIdCached
+ * 命中即绕开列表延迟。放在本模块（而非 entity/chapter）以避免两者循环导入。
+ *
+ * 局限：仅进程内有效。跨进程的写后立即读仍有延迟窗口，由 awaitVisible
+ * 的等待与警告兜底。
+ */
+const chapterIdCache = new Map<string, { recordId: string; at: number }>()
+const CHAPTER_ID_CACHE_TTL = 60_000
+const CHAPTER_ID_CACHE_MAX = 200
+
+/** 写入方在章节记录 create 成功后种缓存。 */
+export function rememberChapterRecordId(
+  baseToken: string,
+  chapterNo: number,
+  recordId: string,
+): void {
+  if (chapterIdCache.size >= CHAPTER_ID_CACHE_MAX) chapterIdCache.clear()
+  chapterIdCache.set(`${baseToken}|${chapterNo}`, { recordId, at: Date.now() })
+}
+
+/**
+ * 带缓存的章节号查找：命中缓存直接返回（无列表延迟）；
+ * 未命中走列表查找，查到后回种缓存。
+ */
+export async function findChapterRecordIdCached(
+  baseToken: string,
+  chapterNo: number,
+  lookup: (baseToken: string, chapterNo: number, signal?: AbortSignal) => Promise<string | undefined>,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const key = `${baseToken}|${chapterNo}`
+  const hit = chapterIdCache.get(key)
+  if (hit !== undefined) {
+    if (Date.now() - hit.at <= CHAPTER_ID_CACHE_TTL) return hit.recordId
+    chapterIdCache.delete(key)
+  }
+  const id = await lookup(baseToken, chapterNo, signal)
+  if (id !== undefined) {
+    chapterIdCache.set(key, { recordId: id, at: Date.now() })
+  }
+  return id
+}
+
+/** 测试钩子：清空章节缓存（跨用例隔离）。 */
+export function clearChapterIdCacheForTests(): void {
+  chapterIdCache.clear()
+}

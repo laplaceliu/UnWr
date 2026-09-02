@@ -151,7 +151,9 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
   ],
   [TABLE.ISSUE]: [
     { name: ISSUE_F.TITLE, type: 'text' },
-    { name: ISSUE_F.TYPE, type: 'select', multiple: false, options: [{ name: '设定冲突' }, { name: '人设崩坏' }, { name: '伏笔未回收' }, { name: '时间线矛盾' }, { name: '方位矛盾' }, { name: '称谓不一致' }] },
+    // 选项与 domain/consistency.ts 的 ISSUE_TYPE 一一对应；新增问题类型时两处同改
+    // （写入侧有 800030005 自愈兜底，但新库预置可以省掉一次重试往返）。
+    { name: ISSUE_F.TYPE, type: 'select', multiple: false, options: [{ name: '设定冲突' }, { name: '人设崩坏' }, { name: '伏笔未回收' }, { name: '时间线矛盾' }, { name: '方位矛盾' }, { name: '称谓不一致' }, { name: '内容红线·严禁' }, { name: '内容红线·高危' }, { name: '内容红线·审慎' }] },
     { name: ISSUE_F.SEVERITY, type: 'number', style: { type: 'rating', icon: 'star', min: 1, max: 5 } },
     { name: ISSUE_F.LOCATION, type: 'text' },
     { name: ISSUE_F.STATUS, type: 'select', multiple: false, options: [{ name: '待处理' }, { name: '已修复' }, { name: '已忽略' }] },

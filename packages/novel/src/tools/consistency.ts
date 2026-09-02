@@ -16,7 +16,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import {
-  buildSemanticCheckPack, persistIssues, runRuleChecks,
+  buildSemanticCheckPack, normalizeIssueSeverity, persistIssues, runRuleChecks,
 } from '../domain/consistency.ts'
 import { getWorkConfig } from '../domain/work.ts'
 import { renderReviewFocus, weightForIssueType } from '../genre/review-focus.ts'
@@ -110,8 +110,11 @@ function registerRuleCheck(ctx: Context): void {
       ])
 
       const threshold = cfg.preset.consistency_weights.blocking_threshold
+      // 红线问题的严重度由等级裁决（不采信模型自报），否则「严禁」档可能被
+      // 填成低分而在高阈值题材下悄悄不阻断。必须在排序与算阻断数**之前**校正。
+      const normalized = r.issues.map(normalizeIssueSeverity)
       // 跨类型排序按题材权重降序（同类内保持领域层给出的严重度降序）
-      const issues = [...r.issues].sort((a, b) =>
+      const issues = [...normalized].sort((a, b) =>
         weightForIssueType(b.type, cfg.preset) - weightForIssueType(a.type, cfg.preset)
         || b.severity - a.severity)
 

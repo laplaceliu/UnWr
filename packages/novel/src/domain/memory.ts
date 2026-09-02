@@ -20,7 +20,7 @@ import type { MemoryLevel } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 // 记忆写入必须走自愈包装：旧库缺 link 字段 / 新库收敛期都会报 not_found，
 // 裸调 createRecords 会让章末记忆沉淀整批失败（2026-09-01 实测 8 连挂）。
-import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
+import { createRecordWithLinks, createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
  * 待写入的字段集合。
@@ -163,28 +163,25 @@ export async function recordCharacterState(
     warnings.push(`人物「${state.character}」不存在于人物表，状态快照未关联人物（仍会记录章节）。`)
   }
 
-  const fields: MutableFields = {
-    [CHARACTER_STATE_F.CHAPTER]: [{ id: chapterRecordId }],
-  }
-  if (state.location !== undefined) fields[CHARACTER_STATE_F.LOCATION] = state.location
-  if (state.physical !== undefined) fields[CHARACTER_STATE_F.PHYSICAL] = state.physical
-  if (state.emotion !== undefined) fields[CHARACTER_STATE_F.EMOTION] = state.emotion
-  if (state.belongings !== undefined) fields[CHARACTER_STATE_F.BELONGINGS] = state.belongings
-  if (state.relationChange !== undefined) fields[CHARACTER_STATE_F.RELATION_CHANGE] = state.relationChange
-  if (state.summary !== undefined) fields[CHARACTER_STATE_F.SUMMARY] = state.summary
-  if (characterRecordId !== undefined) {
-    fields[CHARACTER_STATE_F.CHARACTER] = [{ id: characterRecordId }]
+  // 两段式：batch-create 不支持 link 字段（恒 not_found），标量先建、link 回填
+  const scalarFields: MutableFields = {}
+  if (state.location !== undefined) scalarFields[CHARACTER_STATE_F.LOCATION] = state.location
+  if (state.physical !== undefined) scalarFields[CHARACTER_STATE_F.PHYSICAL] = state.physical
+  if (state.emotion !== undefined) scalarFields[CHARACTER_STATE_F.EMOTION] = state.emotion
+  if (state.belongings !== undefined) scalarFields[CHARACTER_STATE_F.BELONGINGS] = state.belongings
+  if (state.relationChange !== undefined) scalarFields[CHARACTER_STATE_F.RELATION_CHANGE] = state.relationChange
+  if (state.summary !== undefined) scalarFields[CHARACTER_STATE_F.SUMMARY] = state.summary
+
+  const linkFields: Record<string, string[]> = {
+    [CHARACTER_STATE_F.CHAPTER]: [chapterRecordId],
+    ...(characterRecordId === undefined ? {} : { [CHARACTER_STATE_F.CHARACTER]: [characterRecordId] }),
   }
 
-  const ids = await createRecordsWithSelfHeal(
-    baseToken, TABLE.CHARACTER_STATE, [fields], signal,
+  const recordId = await createRecordWithLinks(
+    baseToken, TABLE.CHARACTER_STATE, scalarFields, linkFields, signal,
     (msg) => { warnings.push(msg) },
   )
-  const recordId = ids[0]
-  return {
-    ...recordId === undefined ? {} : { recordId },
-    warnings,
-  }
+  return { recordId, warnings }
 }
 
 /** 事件索引入参。 */
@@ -212,34 +209,35 @@ export async function recordEvent(
     throw new Error(`第 ${chapterNo} 章不存在，无法记录事件。`)
   }
 
-  const fields: MutableFields = {
+  // 两段式：batch-create 不支持 link 字段，标量先建、link 回填
+  const scalarFields: MutableFields = {
     [EVENT_F.NAME]: event.name,
-    [EVENT_F.CHAPTER]: [{ id: chapterRecordId }],
   }
-  if (event.location !== undefined) fields[EVENT_F.LOCATION] = event.location
-  if (event.storyTime !== undefined) fields[EVENT_F.STORY_TIME] = event.storyTime
-  if (event.summary !== undefined) fields[EVENT_F.SUMMARY] = event.summary
-  if (event.impact !== undefined) fields[EVENT_F.IMPACT] = event.impact
-  if (event.isTurningPoint !== undefined) fields[EVENT_F.IS_TURNING_POINT] = event.isTurningPoint
+  if (event.location !== undefined) scalarFields[EVENT_F.LOCATION] = event.location
+  if (event.storyTime !== undefined) scalarFields[EVENT_F.STORY_TIME] = event.storyTime
+  if (event.summary !== undefined) scalarFields[EVENT_F.SUMMARY] = event.summary
+  if (event.impact !== undefined) scalarFields[EVENT_F.IMPACT] = event.impact
+  if (event.isTurningPoint !== undefined) scalarFields[EVENT_F.IS_TURNING_POINT] = event.isTurningPoint
 
   // 参与人物需逐个解析，跳过不存在的
-  const participantIds: { id: string }[] = []
+  const participantIds: string[] = []
   for (const name of event.participants ?? []) {
     const id = await findCharacterRecord(baseToken, name, signal)
     if (id === undefined) {
       warnings.push(`参与人物「${name}」不存在，已跳过。`)
       continue
     }
-    participantIds.push({ id })
+    participantIds.push(id)
   }
-  if (participantIds.length > 0) fields[EVENT_F.PARTICIPANTS] = participantIds
+  const linkFields: Record<string, string[]> = {
+    [EVENT_F.CHAPTER]: [chapterRecordId],
+    ...(participantIds.length > 0 ? { [EVENT_F.PARTICIPANTS]: participantIds } : {}),
+  }
 
-  const ids = await createRecordsWithSelfHeal(
-    baseToken, TABLE.EVENT, [fields], signal,
+  const recordId = await createRecordWithLinks(
+    baseToken, TABLE.EVENT, scalarFields, linkFields, signal,
     (msg) => { warnings.push(msg) },
   )
-  const recordId = ids[0]
-  if (recordId === undefined) throw new Error('事件记录创建失败：未返回 record_id')
   return { recordId, warnings }
 }
 

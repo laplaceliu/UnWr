@@ -268,14 +268,16 @@ describe.skipIf(!HAS_SPACE)('全流程 e2e：全新作品生命周期', () => {
     })).rejects.toThrow(/match 在正文中不存在/)
   })
 
-  it('11. 错误分支 → 重复章节 / read 缺章 / 大纲缺章', async () => {
+  it('11. 错误分支 → 重复章节 / read 缺章 / 大纲自动建章', async () => {
     await expect(run('novel_write_chapter', {
       chapterNo: 1, title: '重复', content: 'x',
     })).rejects.toThrow(/已存在/)
     await expect(run('novel_read_chapter', { chapterNo: 42 })).rejects.toThrow(/不存在/)
-    await expect(run('novel_manage_outline', {
+    // set_chapter_outline 对缺章自动建壳（2026-09-02 行为变更），返回 created=true
+    const r = await run('novel_manage_outline', {
       action: 'set_chapter_outline', chapterNo: 42, outline: 'x',
-    })).rejects.toThrow(/不存在/)
+    })
+    expect((r as { created?: boolean }).created).toBe(true)
   })
 
   it('12. 多作品隔离 + 会话默认作品切换', async () => {

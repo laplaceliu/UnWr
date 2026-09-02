@@ -11,13 +11,18 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { TABLE, RELATION_F, CHARACTER_F } from '@unwr/schema'
+import { TABLE, RELATION_F, CHARACTER_F, CHAPTER_F } from '@unwr/schema'
 
 // 内存中的「飞书 Base」状态：每张表 = recordId -> fields
 const store: Record<string, Record<string, Record<string, unknown>>> = {
   [TABLE.CHARACTER]: {
     charA: { [CHARACTER_F.NAME]: '林北' },
     charB: { [CHARACTER_F.NAME]: '顾朝' },
+  },
+  // START_CHAPTER 是 link 字段（→ 章节表）：章节号须解析为 record id 才能回填
+  [TABLE.CHAPTER]: {
+    ch3: { [CHAPTER_F.NO]: 3 },
+    ch50: { [CHAPTER_F.NO]: 50 },
   },
   [TABLE.RELATION]: {},
 }
@@ -58,9 +63,12 @@ vi.mock('@unwr/feishu', () => {
                 const [field, op, value] = c
                 if (op !== '==') return true
                 const cell = row[field]
-                // select 字段在写入侧是数组（[input.type]），过滤侧是字符串
-                if (Array.isArray(cell)) return cell.includes(value as never)
-                return cell === value
+                // link 字段写入侧是 [{id}]（两段式回填），select 是 ['值']——
+                // 统一提取为原始值数组后再与条件值比较
+                const flat = Array.isArray(cell)
+                  ? cell.map((x) => (typeof x === 'object' && x !== null && 'id' in x ? (x as { id: unknown }).id : x))
+                  : [cell]
+                return flat.includes(value as never)
               })
             }),
           }
@@ -93,19 +101,27 @@ vi.mock('@unwr/feishu', () => {
         }
         return ids
       }),
-      // upsertRelation 不调用，留空即可
-      getRecords: vi.fn(async () => ({ items: [] })),
+      // 两段式的缓存校验路径：按 ID 直读，须返回库内真实记录
+      getRecords: vi.fn(async (_baseToken: string, table: string, recordIds: readonly string[]) => {
+        return {
+          items: recordIds
+            .filter((id) => store[table]?.[id] !== undefined)
+            .map((id) => ({ __recordId: id, ...store[table]![id] })),
+        }
+      }),
       createBase: vi.fn(async () => ({ token: 'mock' })),
     },
   }
 })
 
 // 注意：必须在 mock 后再 import，被 mock 的模块才能被替换
-const { upsertRelation, deleteRelation } = await import('../src/domain/entity.ts')
+const { upsertRelation, deleteRelation, clearRelationCacheForTests } = await import('../src/domain/entity.ts')
 
 beforeEach(() => {
   store[TABLE.RELATION] = {}
   counter.id = 0
+  // 去重缓存跨用例隔离（store 重置后旧缓存指向已删记录）
+  clearRelationCacheForTests()
 })
 
 describe('upsertRelation 去重', () => {
@@ -214,7 +230,9 @@ describe('upsertRelation 软删除戳保护', () => {
       type: '师徒',
       startChapter: 50,
     })
-    expect(store[TABLE.RELATION][r1.recordId][RELATION_F.START_CHAPTER]).toBe(50)
+    // link 语义：章节号 50 已解析为章节表 record id，回填格式 [{id}]
+    expect(store[TABLE.RELATION][r1.recordId][RELATION_F.START_CHAPTER])
+      .toEqual([{ id: 'ch50' }])
     // 戳仍保留
     expect(store[TABLE.RELATION][r1.recordId][RELATION_F.DESCRIPTION]).toContain('[已删除]')
   })

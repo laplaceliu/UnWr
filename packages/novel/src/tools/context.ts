@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import { DEFAULT_LAYERS, buildContext } from '../context/builder.ts'
 import { getPreset } from '../genre/presets.ts'
+import { renderTabooBrief } from '../genre/taboos.ts'
 import { resolveWorkToken } from './defaults.ts'
 import type { PresetId } from '@unwr/schema'
 
@@ -61,7 +62,9 @@ export function renderWritingGuide(p: ReturnType<typeof getPreset>): string {
       + `叙事时间 ${p.narration.narrative_time}`,
     `章节内用 ## 划分场景（每个 ## 为一个场景分节）`,
   ]
-  return lines.join('\n')
+  // 红线附在最后：模型对长文本的注意力呈首尾强、中间弱，
+  // 把否决项放在开头会挤掉题材参数，放在末尾则是「写完前最后一道闸」。
+  return `${lines.join('\n')}\n\n${renderTabooBrief()}`
 }
 
 /** 注册 novel_build_context。 */

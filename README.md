@@ -159,7 +159,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_mark_chapter_memories_stale` | 当章被大幅修订时，标记下游章节摘要为"陈旧" |
 | `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
 | `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
-| `novel_get_review_focus` | 题材化评审重点：检查权重排序、阻断阈值、题材专项评估线（03 文档第六节差异化的入口） |
+| `novel_get_review_focus` | 题材化评审重点：检查权重排序、阻断阈值、题材专项评估线（03 文档第六节差异化的入口），并附**跨题材恒定的内容红线** |
 
 | `novel_revise_chapter` | **改稿**：按场景/块/精确文本定位，支持 replace / expand / patch |
 | `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |

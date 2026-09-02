@@ -194,9 +194,19 @@ describe.skipIf(!HAS_BASE)('端到端：真实飞书', () => {
     expect(works.some((w) => w.baseToken === TEST_BASE)).toBe(true)
   })
 
-  it('错误处理：对不存在的章节写大纲', async () => {
-    await expect(run('novel_manage_outline', {
-      action: 'set_chapter_outline', chapterNo: 99999, outline: 'x',
-    })).rejects.toThrow(/不存在/)
+  it('set_chapter_outline → 章节不存在时自动建章壳', async () => {
+    // 大纲官先规划整卷章纲是自然工作流（实机 2026-09-02：强制"先建章"
+    // 曾让批量章纲全部被拒）。缺失章节自动创建壳（状态=大纲）。
+    const no = chapterNo + 500
+    const r = await run('novel_manage_outline', {
+      action: 'set_chapter_outline', chapterNo: no, outline: `自动建章-${STAMP}`,
+    })
+    expect((r as { created?: boolean }).created).toBe(true)
+    // 二次写入同一章 = 更新，不再新建
+    const r2 = await run('novel_manage_outline', {
+      action: 'set_chapter_outline', chapterNo: no, outline: `v2-${STAMP}`,
+    })
+    expect((r2 as { created?: boolean }).created).toBe(false)
+    expect((r2 as { recordId?: string }).recordId).toBe((r as { recordId?: string }).recordId)
   })
 })
