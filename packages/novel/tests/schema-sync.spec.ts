@@ -145,7 +145,10 @@ describe('工具输出与 output schema 同步', () => {
     type ReqNode = { required?: string[]; properties?: Record<string, ReqNode | unknown> }
     const expected: Record<string, string[]> = {
       // ── 改稿 / 写章 ──
-      novel_revise_chapter: ['chapterNo', 'action', 'content'],
+      // revise_chapter：content 为动作级必填（delete 不需要），schema 只约束
+      // chapterNo / action；replace/expand/patch 缺 content 由 execute 守卫拦截
+      // （实机 2026-09-02：模型清理占位块传 content:"" 被拒 12 次后才补 delete）。
+      novel_revise_chapter: ['chapterNo', 'action'],
       novel_read_chapter: ['chapterNo'],
       novel_write_chapter: ['title', 'content'],  // chapterNo 可选：缺省 = current max + 1
       novel_append_chapter: ['content'],  // chapterNo 同样可选：缺省取上一章

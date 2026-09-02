@@ -230,6 +230,27 @@ export async function blockInsertAfter(
   })
 }
 
+/**
+ * 删除指定块（清理占位/空段落）。
+ *
+ * 实证（lark-cli 1.0.92，2026-09-02）：`--command block_delete` **不需要**
+ * `--content`，直接带 `--block-id` 即可成功（revision 递增，块物理消失）。
+ * 注意：block_id 在结构变更后会失效，调用前应重新 `fetchDoc({ detail: 'with-ids' })`。
+ */
+export async function blockDelete(
+  doc: string,
+  blockId: string,
+  signal?: AbortSignal,
+): Promise<UpdateResult> {
+  const res = await runCli<UpdateEnvelope>(
+    ['docs', '+update', '--doc', doc,
+      '--command', 'block_delete',
+      '--block-id', blockId],
+    { signal },
+  )
+  return toUpdateResult(res)
+}
+
 export interface DocHistoryEntry {
   edit_time: string
   editor_ids?: string[]

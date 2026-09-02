@@ -45,7 +45,11 @@ function registerSetting(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      term: { type: 'string', required: true, description: 'Entry name. REQUIRED for upsert.' },
+      // 不加 schema required：query 不需要它；upsert 缺失由 execute 的运行时
+      // 守卫报动作级错误。schema 级 required 会在校验阶段拦死 query 调用
+      // （实机踩坑 2026-09-02：novel_manage_foreshadow {"action":"query"}
+      // 报 missing required property "content"）。
+      term: { type: 'string', description: 'Entry name. REQUIRED for upsert; optional filter for query.' },
       definition: { type: 'string', description: 'Entry definition (upsert).' },
       category: {
         type: 'array', items: { type: 'string' },
@@ -103,7 +107,7 @@ function registerCharacter(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      name: { type: 'string', required: true, description: 'Character name. REQUIRED for upsert; filters results for query.' },
+      name: { type: 'string', description: 'Character name. REQUIRED for upsert; optional filter for query.' },
       alias: { type: 'string', description: 'Aliases / forms of address, comma-separated (upsert).' },
       role: { type: 'string', description: 'Role or identity (upsert).' },
       traits: {
@@ -242,7 +246,7 @@ function registerForeshadow(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      content: { type: 'string', required: true, description: 'What the foreshadowing is. REQUIRED for upsert.' },
+      content: { type: 'string', description: 'What the foreshadowing is. REQUIRED for upsert; not needed for query.' },
       type: {
         type: 'string', enum: ['主线', '支线', '人物', '物品'],
         description: 'Type (upsert).',
@@ -297,7 +301,7 @@ function registerPlotline(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      name: { type: 'string', required: true, description: 'Plotline name. REQUIRED for upsert.' },
+      name: { type: 'string', description: 'Plotline name. REQUIRED for upsert; not needed for query.' },
       type: { type: 'string', enum: ['主线', '支线'], description: 'Type (upsert); filters query.' },
       status: {
         type: 'string', enum: ['铺垫', '推进', '高潮', '收束', '完结'],
@@ -348,7 +352,7 @@ function registerBranch(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
-      title: { type: 'string', required: true, description: 'Branch title. REQUIRED for upsert.' },
+      title: { type: 'string', description: 'Branch title. REQUIRED for upsert; not needed for query.' },
       description: { type: 'string', description: 'What happens in this branch (upsert).' },
       adoptStatus: {
         type: 'string', enum: ['候选', '已采用', '已否决'],

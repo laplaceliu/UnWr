@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import { maxChapterNo } from '../src/domain/chapter.ts'
-import { enrichPatchError } from '../src/domain/revision.ts'
+import { enrichPatchError, reviseChapter } from '../src/domain/revision.ts'
 
 interface MinimalTool {
   name: string
@@ -40,25 +40,63 @@ describe('工具注册', () => {
     )
   })
 
-  it('revise_chapter 必填 chapterNo / action / content（workToken 可选：缺省用会话最近 work）', () => {
+  it('revise_chapter 必填 chapterNo / action（content 为动作级必填：delete 不需要）', () => {
     const tool = collectTools().get('novel_revise_chapter')
-    const params = tool?.parameters as { required?: string[] } | undefined
-    // 三个真正必填字段：chapterNo(action 可能为某些子类型所用,但顶层 schema 必填)、action、content。
-    // workToken 故意省略：所有修章工具共享 `resolveWorkToken(...)` 在执行期兜底（见
-    // packages/novel/src/tools/defaults.ts:12），这样单章工作流不必每次显式传 base_token。
-    expect(params?.required ?? []).toEqual(
-      expect.arrayContaining(['chapterNo', 'action', 'content']),
-    )
+    const params = tool?.parameters as {
+      required?: string[]
+      properties?: { content?: { description?: string } }
+    } | undefined
+    // schema 只约束 chapterNo / action；content 是否必填取决于 action
+    // （delete 无需 content，实机 2026-09-02：模型清理占位块传 content:""
+    //   连被拒 12 次后才补 delete 动作）——由 execute 守卫按动作校验。
+    expect(params?.required ?? []).toEqual(['chapterNo', 'action'])
     // 兜底：workToken 不在顶层 required 里（防止有人误回潮把它重新标为 required）。
     expect(params?.required ?? []).not.toContain('workToken')
+    expect(params?.properties?.content?.description ?? '').toMatch(/REQUIRED for replace\/expand/)
   })
 
-  it('action 只接受三种取值', () => {
+  it('action 接受四种取值（replace/expand/patch/delete）', () => {
     const tool = collectTools().get('novel_revise_chapter')
     const params = tool?.parameters as {
       properties?: { action?: { enum?: string[] } }
     } | undefined
-    expect(params?.properties?.action?.enum).toEqual(['replace', 'expand', 'patch'])
+    expect(params?.properties?.action?.enum).toEqual(['replace', 'expand', 'patch', 'delete'])
+  })
+})
+
+describe('reviseChapter 入参守卫（离线：守卫先于任何 I/O）', () => {
+  const BASE = 'guard-test-base'
+
+  it('replace 空 content → 指向 action=delete', async () => {
+    await expect(reviseChapter(BASE, 1, {
+      action: 'replace', content: '', target: { blockId: 'doxcnx' },
+    })).rejects.toThrow(/action=delete/)
+  })
+
+  it('replace 缺 content → 同样拦截', async () => {
+    await expect(reviseChapter(BASE, 1, {
+      action: 'replace', target: { scene: '一' },
+    })).rejects.toThrow(/content 不能为空/)
+  })
+
+  it('delete 不需要 content（守卫放行，后续才因假 base 失败）', async () => {
+    // 守卫通过后会走到 resolveChapterDoc —— 用假 base 必然失败，
+    // 但失败点必须晚于守卫（即不能报 content 相关错误）
+    await expect(reviseChapter(BASE, 1, {
+      action: 'delete', target: { blockId: 'doxcnx' },
+    })).rejects.toThrow(/content|不存在|章节|base_token|失败|NOTEXIST|Error/i)
+  })
+
+  it('delete 带了 content → 明确拒绝', async () => {
+    await expect(reviseChapter(BASE, 1, {
+      action: 'delete', content: '多余文本', target: { blockId: 'doxcnx' },
+    })).rejects.toThrow(/不接受 content/)
+  })
+
+  it('expand 空 content → 指向需插入文本', async () => {
+    await expect(reviseChapter(BASE, 1, {
+      action: 'expand', content: '  ', target: { scene: '一' },
+    })).rejects.toThrow(/expand 需要插入文本/)
   })
 })
 

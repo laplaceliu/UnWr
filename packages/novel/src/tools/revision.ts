@@ -27,10 +27,11 @@ export function registerRevisionTools(ctx: Context): void {
 function registerReviseChapter(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_revise_chapter',
-    description: 'Revise an existing chapter in place. Three actions: '
+    description: 'Revise an existing chapter in place. Four actions: '
       + '"replace" rewrites a whole scene or block (use for rewriting, condensing, '
       + 'switching POV/person/voice); "expand" inserts text after a scene or block; '
-      + '"patch" does an exact text replacement (use for polishing a sentence). '
+      + '"patch" does an exact text replacement (use for polishing a sentence); '
+      + '"delete" removes a whole block (cleanup of placeholder/empty paragraphs, no content needed). '
       + 'Locate the target by "scene" (the ## heading, RECOMMENDED) or "blockId". '
       + 'For patch, provide "match" with the exact original text. '
       + 'Every revision is versioned in Feishu and can be reviewed later.',
@@ -38,12 +39,17 @@ function registerReviseChapter(ctx: Context): void {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       action: {
-        type: 'string', enum: ['replace', 'expand', 'patch'], required: true,
-        description: 'replace = rewrite target; expand = insert after target; patch = exact text swap.',
+        type: 'string', enum: ['replace', 'expand', 'patch', 'delete'], required: true,
+        description: 'replace = rewrite target; expand = insert after target; '
+          + 'patch = exact text swap; delete = remove the whole block (no content).',
       },
       content: {
-        type: 'string', required: true,
-        description: 'The new text. For replace/expand it is Markdown; for patch it is the replacement string.',
+        // 不加 schema required：delete 不需要它；replace/expand/patch 缺失由
+        // execute 守卫报动作级错误（与 novel_manage_* 的修复同一模式）。
+        type: 'string',
+        description: 'The new text. REQUIRED for replace/expand (Markdown) and patch '
+          + '(the replacement string). NOT needed for delete — passing content with '
+          + 'delete is an error.',
       },
       scene: {
         type: 'string',

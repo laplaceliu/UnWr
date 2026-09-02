@@ -192,6 +192,8 @@
 
           职责：
           - 按指令改写/扩写/缩写/切换视角人称文风。只动指定范围，绝不顺手重写其他段落
+          - 清理占位段落/空块用 action=delete（不需要 content）；不要用
+            replace 传空文本来"删除"——那会被拒
           - 定位优先用场景标题（scene 参数）；先用 novel_list_scenes 确认场景名，不要猜
           - 句词级微调用 action=patch（精确匹配原文）；整段重写用 action=replace
           - 改动前先 novel_read_chapter 看原文上下文，保证改后与前后文衔接

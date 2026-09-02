@@ -15,6 +15,7 @@
  *   replace 整块替换（改写 / 缩写 / 视角切换 / 人称切换 / 文风切换）
  *   expand  在指定位置后插入（扩写）
  *   patch   精确文本替换（润色）
+ *   delete  删除整块（清理占位块/空段落；无需 content）
  *
  * @module @unwr/novel/domain/revision
  */
@@ -44,12 +45,16 @@ export interface ReviseTarget {
 }
 
 /** 改稿动作。 */
-export type ReviseAction = 'replace' | 'expand' | 'patch'
+export type ReviseAction = 'replace' | 'expand' | 'patch' | 'delete'
 
 /** 改稿入参。 */
 export interface ReviseParams {
-  /** 新内容。replace/patch 时为替换文本，expand 时为插入文本 */
-  content: string
+  /**
+   * 新内容。replace 时为整块新文本，patch 时为替换后的文本，expand 时为插入文本。
+   * delete 动作不需要 content（实机教训 2026-09-02：模型清理占位块时传
+   * content:"" 连续被拒 12 次——删除就该有自己的动作，而不是靠空格Hack）。
+   */
+  content?: string
   action: ReviseAction
   target: ReviseTarget
   /** 目标字数（用于回写字数统计） */
@@ -297,11 +302,15 @@ export async function reviseChapter(
 ): Promise<ReviseResult> {
   // 入参校验：空 content 曾一路透传到 CLI，报出晦涩的
   // "block_replace requires --content"（实测一个会话里连踩 3 次）。
-  // 在这里拦截并给出模型能自我纠正的提示。
-  if (params.content === undefined || params.content.trim() === '') {
+  // delete 不需要 content；其余动作空 content 直接拦截并指向正确动作。
+  if (params.action === 'delete') {
+    if (params.content !== undefined && params.content.trim() !== '') {
+      throw new Error('delete 动作不接受 content——它删除的是整个块。若想替换块内容，请用 action=replace。')
+    }
+  } else if (params.content === undefined || params.content.trim() === '') {
     throw new Error(
-      'content 不能为空——replace/expand 需要完整的新文本，patch 需要替换后的文本。'
-      + '若你只是想删除内容，请把 content 设为一个空格并说明。',
+      'content 不能为空——replace 需要整块新文本，patch 需要替换后的文本，expand 需要插入文本。'
+      + '若你其实想删掉这一块（如清理占位段落），请改用 action=delete（不需要 content）。',
     )
   }
   if (params.action === 'patch' && (params.target.match === undefined || params.target.match.trim() === '')) {
@@ -359,13 +368,13 @@ export async function reviseChapter(
     locatedBy = 'match'
     blockId = ''
     try {
-      res = await docs.strReplace(docToken, params.target.match, params.content, signal)
+      res = await docs.strReplace(docToken, params.target.match, params.content as string, signal)
     } catch (e) {
       throw enrichPatchError(e instanceof Error ? e : new Error(String(e)))
     }
     warnings.push(...res.warnings ?? [])
   } else {
-    // replace / expand 需要定位到块。优先级：
+    // replace / expand / delete 需要定位到块。优先级：
     //   blockId（显式）> scene+paragraph（结构化，**推荐**）> scene（整场景）
     if (params.target.blockId !== undefined && params.target.blockId !== '') {
       locatedBy = 'blockId'
@@ -395,7 +404,7 @@ export async function reviseChapter(
       // 无 blockId / scene 时，退化到 match：但不直接替换，
       // 而是提示模型改用 patch 动作
       throw new Error(
-        'replace / expand 需要 blockId 或 scene 来定位。'
+        'replace / expand / delete 需要 blockId 或 scene 来定位。'
         + '若只有原文片段，请改用 action=patch。',
       )
     } else {
@@ -403,9 +412,14 @@ export async function reviseChapter(
     }
 
     if (params.action === 'replace') {
-      res = await docs.blockReplace(docToken, blockId, params.content, {}, signal)
+      res = await docs.blockReplace(docToken, blockId, params.content as string, {}, signal)
+    } else if (params.action === 'expand') {
+      res = await docs.blockInsertAfter(docToken, blockId, params.content as string, signal)
     } else {
-      res = await docs.blockInsertAfter(docToken, blockId, params.content, signal)
+      // delete：物理删除整块（占位段落/空段清理）。
+      // CLI 实证无需 --content；块删除后 block_id 失效，结果里提示重新定位。
+      res = await docs.blockDelete(docToken, blockId, signal)
+      warnings.push('块已删除，其 block_id 已失效；继续操作同区域请重新 novel_list_scenes 获取结构。')
     }
     warnings.push(...res.warnings ?? [])
   }
