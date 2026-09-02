@@ -46,6 +46,23 @@ const DRAFTER_REQUIRED = [
   'novel_update_summary',
   'novel_record_character_state',
   'novel_record_event',
+  // 撞上「大纲壳」时要能自己核对章纲与作品上下文，否则只能把整篇正文
+  // 以文本形式交回主会话（实机 2026-09-02 第 1 章死锁）。
+  'novel_manage_outline',
+]
+
+/**
+ * 每个建设型子代理都应能确认「自己在给哪部作品干活」。
+ *
+ * 实机踩坑 2026-09-02：大纲官开工前调 novel_manage_work(action=list) 核对
+ * 作品，白名单里没有 → `Error: unknown tool "novel_manage_work"`。子代理
+ * 继承会话默认作品，但**无法核对**，一旦 prompt 没写全就选错作品。
+ */
+const WORK_CONTEXT_AGENTS = [
+  'unwr-agent-worldkeeper',
+  'unwr-agent-characterkeeper',
+  'unwr-agent-outliner',
+  'unwr-agent-drafter',
 ]
 
 interface MinimalTool { name: string }
@@ -193,6 +210,22 @@ describe('cordis.patch.yml ↔ 插件注册表', () => {
         expect(b.personaReadonlyNote, `${id} 持有 manage_character 但 persona 无只读约束`).toBe(true)
       }
     }
+  })
+
+  it('建设型角色都能确认作品上下文（防 unknown tool "novel_manage_work"）', () => {
+    for (const id of WORK_CONTEXT_AGENTS) {
+      const b = agentBlocks.find((x) => x.id === id)
+      expect(b, `${id} 缺失`).toBeDefined()
+      // 拿得到工具才能核对作品；同时 persona 必须把它限成只读
+      expect(b?.allow ?? [], `${id} 白名单缺 novel_manage_work`).toContain('novel_manage_work')
+      expect(b?.personaReadonlyNote, `${id} 持有 manage_work 但 persona 无只读约束`).toBe(true)
+    }
+  })
+
+  it('起草官能自己核对章纲（章壳死锁的自救前提）', () => {
+    const drafter = agentBlocks.find((b) => b.id === 'unwr-agent-drafter')
+    expect(drafter?.allow ?? []).toContain('novel_manage_outline')
+    expect(drafter?.personaReadonlyNote).toBe(true)
   })
 })
 

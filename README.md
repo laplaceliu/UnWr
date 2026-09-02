@@ -239,10 +239,10 @@ loader（cordis-plugin-loader ≥ 1.0.3）只对 `config` / `disabled` 字段
 
 | 子代理（toolName） | 角色 | 何时被委托 | 工具白名单 |
 |---|---|---|---|
-| `novel_agent_worldkeeper` | 世界观设定官 | 新增/修改设定、设计体系、查设定冲突 | `novel_manage_setting`, `novel_read_chapter` |
-| `novel_agent_characterkeeper` | 人物官 | 建/改人物档案、人物立不住、记章末状态 | `novel_manage_character`, `novel_manage_relation`, `novel_record_character_state`, `novel_read_chapter` |
-| `novel_agent_outliner` | 大纲官 | 列卷章大纲、伏笔埋收、剧情线与事件索引 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_record_event`, `novel_build_context`, `novel_read_chapter` |
-| `novel_agent_drafter` | 起草官 | 写第 N 章、续写、自动写完本卷 | `novel_build_context`, `novel_read_chapter`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event` |
+| `novel_agent_worldkeeper` | 世界观设定官 | 新增/修改设定、设计体系、查设定冲突 | `novel_manage_setting`, `novel_read_chapter`, `novel_manage_work`（只读） |
+| `novel_agent_characterkeeper` | 人物官 | 建/改人物档案、人物立不住、记章末状态 | `novel_manage_character`, `novel_manage_relation`, `novel_record_character_state`, `novel_read_chapter`, `novel_manage_work`（只读） |
+| `novel_agent_outliner` | 大纲官 | 列卷章大纲、伏笔埋收、剧情线与事件索引 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_record_event`, `novel_build_context`, `novel_read_chapter`, `novel_manage_work`（只读） |
+| `novel_agent_drafter` | 起草官 | 写第 N 章、续写、自动写完本卷 | `novel_build_context`, `novel_read_chapter`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event`, `novel_manage_outline`（只读）, `novel_manage_work`（只读） |
 | `novel_agent_reviser` | 改稿官 | 改写/扩缩/换视角·人称·文风 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history`, `novel_manage_character`（只读） |
 | `novel_agent_critic` | 评审官 | 评审诊断、定稿前检查 | `novel_get_review_focus`, `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
 | `novel_agent_rescuer` | 卡文救援官 | 卡住了、要候选分支 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_manage_character`（只读）, `novel_read_chapter` |
@@ -251,9 +251,17 @@ loader（cordis-plugin-loader ≥ 1.0.3）只对 `config` / `disabled` 字段
 
 **软约束**：`toolFilter` 粒度只到「工具」级，而 `novel_manage_*` 是 query/upsert 合一。
 改稿官与救援官拿到 `novel_manage_character` 只为**读**口癖与破局素材，其写权限由
-persona 里的「只读约束」限制。真要硬隔离，需要把 `novel_manage_*` 拆成
+persona 里的「只读约束」限制。同理，4 个建设型角色（设定/人物/大纲/起草）都拿到
+`novel_manage_work`，只为 `action=list|get_config` 确认「自己在给哪部作品干活」——
+子代理继承会话默认作品却**无法核对**，实机 2026-09-02 大纲官因此直接报
+`unknown tool "novel_manage_work"`。真要硬隔离，需要把 `novel_manage_*` 拆成
 `novel_query_*` / `novel_upsert_*` 两组工具——代价是工具数从 25 涨到 30+，
 与「工具越少越好选」的取舍相冲突，暂不做。
+
+**白名单缺工具 = 硬失败**：子代理调白名单外的工具会拿到
+`Error: unknown tool "<name>"`（`ToolNotFoundError`），且它**没有任何自救手段**。
+因此「子代理该能看到什么」必须一次性配够——宁可多给一个靠 persona 限只读的读工具，
+也不要让它在关键路径上撞墙。
 
 详见 `docs/requirements/03-agent-matrix.md`（角色职责与权限）。
 

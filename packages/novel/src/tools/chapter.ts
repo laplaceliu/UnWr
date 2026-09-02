@@ -36,7 +36,7 @@ function registerWriteChapter(ctx: Context): void {
       + 'Three states are accepted: '
       + '(a) chapter number is unused → creates a new document + index row; '
       + '(b) chapter number exists but has no body document (an outline shell from '
-      + 'novel_manage_chapter set_outline) → fills the shell by creating the body document '
+      + 'novel_manage_outline set_chapter_outline) → fills the shell by creating the body document '
       + 'and backfilling docUrl/words/status onto the existing row; '
       + '(c) chapter number exists AND already has a body document → fails — use '
       + 'novel_append_chapter to continue or novel_revise_chapter to rewrite parts.',

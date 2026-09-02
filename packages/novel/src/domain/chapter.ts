@@ -20,7 +20,9 @@ import {
 import type { ChapterStatus } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 import { extractDocToken } from '../context/builder.ts'
-import { resolveChapterMount, findVolumeRecordId, rememberChapterRecordId } from './organize.ts'
+import {
+  resolveChapterMount, findVolumeRecordId, rememberChapterRecordId, findChapterRecordIdCached,
+} from './organize.ts'
 import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
@@ -156,8 +158,28 @@ export async function maxChapterNo(
  * 后果是：查询一旦失败（限流、字段不匹配、表不存在），
  * 冲突检测就会误判为"无冲突"，于是重复创建同一章节号——
  * 数据污染且极难排查。宁可让调用失败，也不能静默放行。
+ *
+ * **必须走写后缓存**（2026-09-02 补）：本函数是 writeChapter 判断
+ * 「填壳 vs 新建」的唯一依据。大纲官 set_chapter_outline 刚建完章壳时，
+ * 飞书列表索引有 ~6s 延迟，裸列表查询会扑空 → writeChapter 以为章不存在
+ * → 新建第二条同号记录（比原先的死锁更糟：静默数据污染）。
+ * setChapterOutline 已种缓存，这里必须命中它。
  */
 export async function findChapterRecord(
+  baseToken: string,
+  chapterNo: number,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  return await findChapterRecordIdCached(
+    baseToken,
+    chapterNo,
+    queryChapterRecordId,
+    signal,
+  )
+}
+
+/** 纯列表查询（不含缓存），仅供 findChapterRecordIdCached 回调。 */
+async function queryChapterRecordId(
   baseToken: string,
   chapterNo: number,
   signal?: AbortSignal,

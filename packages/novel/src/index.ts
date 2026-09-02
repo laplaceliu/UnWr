@@ -105,6 +105,10 @@ export const WRITING_CONVENTIONS = `
    prompt 里必须写全——作品名或 workToken、章节号、涉及的人物/场景名、
    用户的原始意图与约束（如"冷峻些""保留悬念"）。只写"改一下第三章"
    会让子代理选错作品或章节。
+   子代理把大段正文贴回报告里 = 它撞了工具边界，**不要替它代写**：
+   代写会丢掉它那一轮已定稿的细节与前后文。正确动作是重新委托，
+   在 prompt 里指明它该换用哪个工具（如「这章只有大纲壳，用
+   novel_write_chapter 写」）。
 6. **角色委托可后台并行**：互不依赖的委托（如设定官+人物官）应放在
    同一条消息里并行发起。
 7. **workToken 纪律**：所有工具的 workToken 都**可省略**（自动沿用会话默认
@@ -114,9 +118,16 @@ export const WRITING_CONVENTIONS = `
    （状态=大纲、标题=第 N 章；传 volume 还会自动建同名卷壳），可以放心
    先批量规划整卷章纲再逐章起草。起草官 novel_write_chapter 写正式正文时
    会复用同一章记录并覆盖状态。
+   **章壳不是障碍**：novel_write_chapter 三态通吃——章节号未占用则新建；
+   已占用但只有大纲壳（无正文文档）则复用记录建文档并回填；
+   已占用且有正文文档才拒绝（那时改用 append/revise）。
+   因此 append/revise/read 报「没有正文文档」时，正确动作是**回头用
+   novel_write_chapter 写**，不是反复试 append，更不是判定为死锁去问用户。
 9. **改稿纪律**：revise 的 patch/replace 失败时，不要反复用猜的 match 重试，
    也**绝不用占位文本（如 X）试探写工具**——会真实写入。先用
    novel_list_scenes 取场景/块结构化定位，再按块 ID 精确修改。
+   同理**不要用 bash/echo 做笔记或"探一下工具"**：它既写不进飞书，
+   也拿不到任何状态，纯属白烧一轮。要状态就用 novel_manage_* 的 query。
 10. **写作模式**：多步写作任务开始前，先用 novel_manage_work(action=get_config)
    确认当前写作模式（config.mode），并按模式调整编排：
    - 协作助手：逐章/逐段推进，每次生成后停下等用户反馈再继续。
