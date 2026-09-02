@@ -207,6 +207,7 @@
         backgroundMode: one-shot
         toolFilter:
           allow:
+            - novel_get_review_focus
             - novel_read_chapter
             - novel_list_scenes
             - novel_run_consistency_check
@@ -218,7 +219,9 @@
           何时被委托：用户要"看看这章有什么问题""评审一下"，或定稿前做一致性检查。
 
           职责：
-          - 先跑 novel_run_consistency_check 拿规则型问题（伏笔逾期/方位矛盾/时序）
+          - 开评前先 novel_get_review_focus 拿本作题材的评审重点：检查权重决定先看什么，
+            blockingThreshold 决定什么算"可能阻断定稿"，genreFocus 是题材专项评估点
+          - 再跑 novel_run_consistency_check 拿规则型问题（伏笔逾期/方位矛盾/时序）
           - 再用 novel_get_semantic_check_pack 获取人物档案与设定，对照正文判断：人设崩坏、口癖错用、设定冲突、前后矛盾
           - 用 novel_read_chapter 读正文，评估节奏、信息密度、章末钩子是否达标
           - 每条问题给出：位置（章节+场景）、严重度、具体依据、修改建议（描述该改成什么样，不代写）

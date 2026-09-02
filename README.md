@@ -135,6 +135,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_mark_chapter_memories_stale` | 当章被大幅修订时，标记下游章节摘要为"陈旧" |
 | `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
 | `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
+| `novel_get_review_focus` | 题材化评审重点：检查权重排序、阻断阈值、题材专项评估线（03 文档第六节差异化的入口） |
 
 | `novel_revise_chapter` | **改稿**：按场景/块/精确文本定位，支持 replace / expand / patch |
 | `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |
@@ -190,6 +191,13 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 理由：在工具里二次调用模型既贵又慢且难验证；而"人设崩了没有"这类
 判断本就该由正在写作的模型来做——它手上有完整正文上下文。
 
+**阈值与顺序随题材**（消费 `consistency_weights`，此前定义了无人用）：
+问题列表按对应 `w_*` 权重降序排列；`blocking` 判定用题材预设的
+`blocking_threshold`（网文 3 / 类型小说 2 / 纯文学 4），不再是写死的 4。
+评审侧的题材差异（网文看爽点追读、类型看诡计公平、纯文学看语言心理）
+用 `novel_get_review_focus` 按作品题材实时渲染——persona 是静态的，
+不随题材变，所以差异必须走工具返回值。
+
 ## 编排（novel_agent_* 多智能体）
 
 **主编排官 = 主会话模型本身**（不单独注册）；它把任务委托给 7 个专职子代理。
@@ -208,7 +216,7 @@ prompt 与规矩由子代理各自的 `persona` 字段约束，与主会话 syst
 | `novel_agent_outliner` | 大纲官 | 列卷章大纲、伏笔埋收、剧情线与事件索引 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_record_event`, `novel_build_context`, `novel_read_chapter` |
 | `novel_agent_drafter` | 起草官 | 写第 N 章、续写、自动写完本卷 | `novel_build_context`, `novel_read_chapter`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event` |
 | `novel_agent_reviser` | 改稿官 | 改写/扩缩/换视角·人称·文风 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history`, `novel_manage_character`（只读） |
-| `novel_agent_critic` | 评审官 | 评审诊断、定稿前检查 | `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
+| `novel_agent_critic` | 评审官 | 评审诊断、定稿前检查 | `novel_get_review_focus`, `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
 | `novel_agent_rescuer` | 卡文救援官 | 卡住了、要候选分支 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_manage_character`（只读）, `novel_read_chapter` |
 
 **硬约束**：评审官的白名单里**没有任何写工具**——它只诊断不代笔。

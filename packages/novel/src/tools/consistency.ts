@@ -18,12 +18,15 @@ import type {} from '@deepseek-ai/dsh-tools'
 import {
   buildSemanticCheckPack, persistIssues, runRuleChecks,
 } from '../domain/consistency.ts'
+import { getWorkConfig } from '../domain/work.ts'
+import { renderReviewFocus, weightForIssueType } from '../genre/review-focus.ts'
 import { resolveWorkToken } from './defaults.ts'
 
 /** 注册一致性检查工具。 */
 export function registerConsistencyTools(ctx: Context): void {
   registerRuleCheck(ctx)
   registerSemanticPack(ctx)
+  registerReviewFocus(ctx)
 }
 
 function registerRuleCheck(ctx: Context): void {
@@ -33,6 +36,8 @@ function registerRuleCheck(ctx: Context): void {
       + 'overdue unresolved foreshadowing, character location jumps, '
       + 'unexplained injury recovery, and event ordering. '
       + 'Results are deterministic and can be saved to the issue table. '
+      + 'Issues are ordered by this work\'s genre weights (consistency_weights) and '
+      + 'blockingThreshold comes from the genre preset, not a fixed value. '
       + 'For subjective issues (character voice, setting conflicts) use '
       + 'novel_get_semantic_check_pack instead.',
     parameters: {
@@ -60,6 +65,8 @@ function registerRuleCheck(ctx: Context): void {
         properties: {
           total: { type: 'number', required: true },
           blocking: { type: 'number', required: true },
+          genreFocus: { type: 'string', required: true },
+          blockingThreshold: { type: 'number', required: true },
           issues: {
             type: 'array', required: true,
             items: {
@@ -87,32 +94,45 @@ function registerRuleCheck(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const r = await runRuleChecks(
-        resolveWorkToken(args),
-        {
-          ...args.currentChapterNo === undefined ? {} : { currentChapterNo: args.currentChapterNo },
-          ...args.payoffTolerance === undefined ? {} : { payoffTolerance: args.payoffTolerance },
-          ...args.checkTimeline === undefined ? {} : { checkTimeline: args.checkTimeline },
-        },
-        exec.signal,
-      )
+      const baseToken = resolveWorkToken(args)
+      // 题材配置与检查并行拉取：权重与阈值来自作品表的题材预设（缺表降级为网文默认）
+      const [r, cfg] = await Promise.all([
+        runRuleChecks(
+          baseToken,
+          {
+            ...args.currentChapterNo === undefined ? {} : { currentChapterNo: args.currentChapterNo },
+            ...args.payoffTolerance === undefined ? {} : { payoffTolerance: args.payoffTolerance },
+            ...args.checkTimeline === undefined ? {} : { checkTimeline: args.checkTimeline },
+          },
+          exec.signal,
+        ),
+        getWorkConfig(baseToken, exec.signal),
+      ])
 
-      const persisted = args.persist === true && r.issues.length > 0
-        ? await persistIssues(resolveWorkToken(args), r.issues, exec.signal)
+      const threshold = cfg.preset.consistency_weights.blocking_threshold
+      // 跨类型排序按题材权重降序（同类内保持领域层给出的严重度降序）
+      const issues = [...r.issues].sort((a, b) =>
+        weightForIssueType(b.type, cfg.preset) - weightForIssueType(a.type, cfg.preset)
+        || b.severity - a.severity)
+
+      const persisted = args.persist === true && issues.length > 0
+        ? await persistIssues(baseToken, issues, exec.signal)
         : undefined
 
       return {
-        total: r.issues.length,
-        // severity >= 4 视为可能阻断定稿
-        blocking: r.issues.filter((i) => i.severity >= 4).length,
+        total: issues.length,
+        // 阈值随题材：网文 3 / 类型小说 2 / 纯文学 4
+        blocking: issues.filter((i) => i.severity >= threshold).length,
         // 内联映射而非调 toWire：让返回值形状与 output schema 精确匹配
-        issues: r.issues.map((i) => ({
+        issues: issues.map((i) => ({
           type: i.type,
           severity: i.severity,
           title: i.title,
           location: i.location,
           confidence: i.confidence,
         })),
+        genreFocus: renderReviewFocus(cfg.preset).genreFocus,
+        blockingThreshold: threshold,
         checkedTables: r.checkedTables,
         skippedTables: r.skipped,
         ...persisted === undefined ? {} : { persisted },
@@ -186,18 +206,65 @@ function registerSemanticPack(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const pack = await buildSemanticCheckPack(resolveWorkToken(args), args.chapterNo, exec.signal)
+      const baseToken = resolveWorkToken(args)
+      const [pack, cfg] = await Promise.all([
+        buildSemanticCheckPack(baseToken, args.chapterNo, exec.signal),
+        getWorkConfig(baseToken, exec.signal),
+      ])
       return {
         ...pack,
-        reviewChecklist: [
-          'H1 设定冲突：本章描写是否与设定词条矛盾？',
-          'H2-a 性格违背：人物言行是否符合其性格标签？',
-          'H2-b 口癖错用：该用口癖的地方是否用？有没有用错人？',
-          'H2-c 动机合理：人物行为能否由其核心动机解释？',
-          'H2-d 知识越界：人物是否表现出按理不该知道的信息？',
-          'H7 前后矛盾：本章陈述是否与历史章节摘要冲突？',
-        ],
+        // 检查清单按题材权重排序（评审重点因题材而异，见 03 文档第六节）
+        reviewChecklist: renderReviewFocus(cfg.preset).checklist,
       }
+    },
+  }))
+}
+
+/**
+ * novel_get_review_focus —— 题材化评审重点。
+ *
+ * persona 是静态 YAML，不随作品题材变化；评审侧的题材差异化
+ * （先看什么、什么算阻断、专项评估什么）只能由工具在运行时产出。
+ * 评审官应在开评前调用一次，让检查顺序与该作品的题材配置对齐。
+ */
+function registerReviewFocus(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'novel_get_review_focus',
+    description: 'Get this work\'s genre-specific review focus: check weights (what to look '
+      + 'at first), the blocking threshold, and the genre-specific assessment line '
+      + '(webnovel: pacing/payoff appeal; genre fiction: clue fairness and self-consistency; '
+      + 'literary: language and psychological depth). Call this BEFORE reviewing a chapter '
+      + 'or interpreting consistency check results.',
+    parameters: {
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          presetId: { type: 'string', required: true },
+          presetName: { type: 'string', required: true },
+          genreFocus: { type: 'string', required: true },
+          blockingThreshold: { type: 'number', required: true },
+          weights: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                key: { type: 'string', required: true },
+                label: { type: 'string', required: true },
+                weight: { type: 'number', required: true },
+              },
+            },
+          },
+          checklist: { type: 'array', required: true, items: { type: 'string' } },
+        },
+      },
+      render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
+    },
+    async execute(args, exec) {
+      const cfg = await getWorkConfig(resolveWorkToken(args), exec.signal)
+      return renderReviewFocus(cfg.preset)
     },
   }))
 }
