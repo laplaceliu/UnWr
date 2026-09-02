@@ -37,8 +37,8 @@ interface ContextDigest {
   estimatedTokens: number
 }
 
-/** 把题材预设渲染为模型可执行的写作指引。 */
-function renderWritingGuide(p: ReturnType<typeof getPreset>): string {
+/** 把题材预设渲染为模型可执行的写作指引（工作台 S1 上下文面板也复用）。 */
+export function renderWritingGuide(p: ReturnType<typeof getPreset>): string {
   const lines = [
     `题材：${p.preset_name}（${p.description ?? ''}）`,
     `目标字数：${p.pacing.target_words_per_chapter} 字／章，`

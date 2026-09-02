@@ -38,13 +38,13 @@
 
 - insert:
     # ---------- 领域工具 ----------
+    # name 用占位符 __UNWR_ROOT__，由 scripts/sync-cordis-patch.mjs 在生成
+    # 实机副本时替换为仓库绝对路径。为什么不在 YAML 里写 !!js 表达式：
+    # cordis-plugin-loader >= 1.0.3 只对 config / disabled 字段做 !!js 求值
+    # （interpolate 仅作用于 config），name 会被原样传给 import() ——
+    # {__jsExpr} 对象进去直接 "name.startsWith is not a function"。
     - id: unwr-novel
-      name: !!js |
-        (() => {
-          const root = process.env.UNWR_ROOT
-          if (!root) throw new Error('[unwr] 请先 export UNWR_ROOT=<仓库根> —— 见 scripts/sync-cordis-patch.mjs')
-          return root + '/dist/unwr-novel.mjs'
-        })()
+      name: __UNWR_ROOT__/dist/unwr-novel.mjs
       config:
         readOnlySafeMode: true
         verbose: true

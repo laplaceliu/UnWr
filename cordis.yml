@@ -5,19 +5,18 @@
 #   pnpm build   →  dist/unwr-novel.mjs
 # 配置方式见 README「在 DSH 中运行」。
 #
-# 用法：
-#   cd <dsh-source>
-#   pnpm dsh web --patch <unwr>/cordis.yml --port 3082
-#
 # ── 路径说明 ──────────────────────────────────────────────
-# DSH 要求插件 name 必须是**绝对路径**，且 patch 文件不改变 loader 的
-# 模块解析基目录。为避免把个人目录写进仓库，这里用 `!!js` 表达式
-# 从环境变量拼接。
+# DSH 要求插件 name 必须是**可直接 import 的字符串**，且 loader（>=1.0.3）
+# 只对 config / disabled 字段做 `!!js` 求值，**name 字段不求值**——写
+# `!!js` 表达式会在加载时报 "name.startsWith is not a function"。
+# 因此本文件用占位符 __UNWR_ROOT__，由 scripts/sync-cordis-patch.mjs
+# 生成 dist/cordis.local.yml（已 gitignore）供 --patch 使用：
 #
-# 使用前设置（建议写入你的 shell 配置，勿提交）：
-#   export UNWR_ROOT=/path/to/UnWr
+#   pnpm sync:patch
+#   pnpm dsh web --patch <UNWR_ROOT>/dist/cordis.local.yml --port 3082
 #
-# 若未设置 UNWR_ROOT，本文件会加载失败并提示——不会静默用错路径。
+# 占位符未被替换时（直接把本文件传给 --patch）会在 sync 校验阶段报错，
+# 不会静默用错路径。仓库内不出现个人绝对路径（隐私红线）。
 # ──────────────────────────────────────────────────────────
 
 - insert:
@@ -27,12 +26,7 @@
     # 由 @unwr/novel 直接 import。实机验证发现：强行把纯 re-export 模块注册为
     # 插件会报 "expect function or object with an apply method"。
     - id: unwr-novel
-      name: !!js |
-        (() => {
-          const root = process.env.UNWR_ROOT
-          if (!root) throw new Error('[unwr] 请设置环境变量 UNWR_ROOT 指向 UnWr 仓库根目录')
-          return root + '/packages/novel/src/index.ts'
-        })()
+      name: __UNWR_ROOT__/packages/novel/src/index.ts
       config:
         # 安全模式：不注册任何删除类工具
         readOnlySafeMode: true

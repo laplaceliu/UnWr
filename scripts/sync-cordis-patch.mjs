@@ -1,45 +1,51 @@
 /**
- * 把仓内 profiles/web/cordis.patch.yml 同步到 ~/.dsh/profiles/web/cordis.patch.yml。
+ * 把仓内的占位符配置生成为「实机可用」的副本（含真实绝对路径）。
  *
- * 为何要脚本：DSH 配置文件按"用户层"放在 ~/.dsh 下，不入 git。
- * 该文件含 bundle 绝对路径，硬编码进仓会暴露个人目录，且无法跨机器复用。
- * 仓内文件用 `!!js | process.env.UNWR_ROOT` 表达式拼接路径——只要 sync 时
- * UNWR_ROOT 已 export，copy 即可，无需 envsubst 或模板。
+ * 产物两份（都已脱离 git）：
+ *   1. ~/.dsh/profiles/web/cordis.patch.yml   —— npx 安装版 DSH 的用户层 patch
+ *   2. <root>/dist/cordis.local.yml           —— 源码版 DSH 的 --patch overlay
  *
- * 本脚本只做一件事：单文件复制，含以下护栏：
- *   1. 校验仓内源文件**不含**当前用户的 home 路径（防回退：历史上有
- *      用户的 home 绝对路径被直接粘进 patch，污染了 git 历史与下游协作者
- *      配置；这条 guard 在 sync 时阻断此类回退——见 memory 78207951）
- *   2. 校验 process.env.UNWR_ROOT 已设置（patch 文件依赖此变量）
- *   3. 目标已存在且字节级一致 → 跳过
- *   4. 目标已存在但不一致 → 默认报错；--force 备份成 .bak 后覆盖
+ * 为何要脚本：DSH 要求插件 name 是可直接 import 的字符串，而 loader
+ * （cordis-plugin-loader >= 1.0.3）只对 config / disabled 字段做 `!!js`
+ * 求值，name 字段不求值——在 YAML 里写 `!!js` 拼路径会报
+ * "name.startsWith is not a function"（实机踩坑 2026-09-02）。
+ * 因此仓内 canonical 用占位符 __UNWR_ROOT__（保持零个人路径，隐私红线
+ * memory 78207951），由本脚本在生成时内联真实路径。
+ *
+ * 护栏：
+ *   1. canonical 源文件**禁止**含个人 home 路径（防回退污染）
+ *   2. UNWR_ROOT 必须已设置（占位符替换依赖它）；--skip-env-check 仅供排错
+ *   3. 目标已存在且一致 → 跳过
+ *   4. 目标已存在但不一致 → 默认报错；--force 备份 .bak 后覆盖
  *
  * 用法：
  *   export UNWR_ROOT=<仓库根绝对路径>
- *   node scripts/sync-cordis-patch.mjs           # 安全模式
- *   node scripts/sync-cordis-patch.mjs --force   # 覆盖（先备份）
+ *   pnpm sync:patch            # 等价于 node scripts/sync-cordis-patch.mjs
+ *   pnpm sync:patch -- --force # 覆盖（先备份）
  *
  * 同步完之后需重启 DSH 实例（配置改动不会热生效）。
  *
  * @module
  */
 
-import { copyFileSync, existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const src = resolve(root, 'profiles/web/cordis.patch.yml')
 
-/** ~/.dsh/profiles/web/cordis.patch.yml —— 仓内文件的"实机"位置 */
-const dst = resolve(
-  homedir(),
-  '.dsh',
-  'profiles',
-  'web',
-  'cordis.patch.yml',
-)
+/** 占位符 → 实机副本的映射：源文件 → 生成目标。 */
+const TARGETS = [
+  {
+    src: resolve(root, 'profiles/web/cordis.patch.yml'),
+    dst: resolve(homedir(), '.dsh', 'profiles', 'web', 'cordis.patch.yml'),
+  },
+  {
+    src: resolve(root, 'cordis.yml'),
+    dst: resolve(root, 'dist', 'cordis.local.yml'),
+  },
+]
 
 /** 路径中禁止出现的字符串集合（隐私红线，见 memory 78207951） */
 const home = homedir()
@@ -54,64 +60,77 @@ function fail(msg, code = 1) {
   process.exit(code)
 }
 
-// ─── 1. source 必须存在 ─────────────────────────────────────────────
-if (!existsSync(src)) {
-  fail(`源文件不存在：${src}\n  漏提？git pull 一下`)
-}
-
-// ─── 2. source 内禁止带个人路径（防止 patch 文件被回退污染） ─────
-const content = readFileSync(src, 'utf8')
-for (const fb of FORBIDDEN_SUBSTRINGS) {
-  if (!fb) continue
-  if (content.includes(fb)) {
-    fail(
-      `源文件含个人路径 "${fb}"。\n` +
-        `  仓内 profiles/web/cordis.patch.yml 必须用 process.env.UNWR_ROOT 拼接路径。\n` +
-        `  修复方式：把硬编码绝对路径改成 cordis.yml 同款的 !!js | process.env.UNWR_ROOT 表达式。`,
-    )
-  }
-}
-
-// ─── 3. UNWR_ROOT 必须已设置（patch 文件依赖此变量） ─────────────
-if (!process.env.UNWR_ROOT) {
+// ─── 1. UNWR_ROOT 必须已设置（占位符替换依赖它） ────────────────────
+const unwrRoot = process.env.UNWR_ROOT
+if (!unwrRoot) {
   console.error('⚠ UNWR_ROOT 未设置。')
-  console.error('  patch 文件用 `!!js | process.env.UNWR_ROOT` 拼接 bundle 路径，')
-  console.error('  未设置时 DSH 加载时直接抛 "请先 export UNWR_ROOT=<仓库根>"。')
+  console.error('  canonical 配置用 __UNWR_ROOT__ 占位符，本脚本要把它替换成仓库绝对路径。')
   if (!process.argv.includes('--skip-env-check')) {
     fail('必须先 export UNWR_ROOT=<仓库根>。加 --skip-env-check 跳过此检查（仅供排错）。')
   }
-  console.warn('已跳过 UNWR_ROOT 检查。DSH 启动会失败，仅用于脚本自检。')
+  console.warn('已跳过 UNWR_ROOT 检查：占位符将原样保留，DSH 启动会失败，仅用于脚本自检。')
 }
+const absoluteRoot = unwrRoot !== undefined ? resolve(unwrRoot) : '__UNWR_ROOT__'
 
-// ─── 4. 目标处理 ───────────────────────────────────────────────────
 const force = process.argv.includes('--force')
+let synced = 0
 
-if (existsSync(dst)) {
-  const existing = readFileSync(dst, 'utf8')
-  if (existing === content) {
-    console.log(`✓ 已存在且一致：${dst}`)
-    console.log('  无需修改。')
-    process.exit(0)
+for (const { src, dst } of TARGETS) {
+  // ─── 2. source 必须存在 ────────────────────────────────────────────
+  if (!existsSync(src)) {
+    fail(`源文件不存在：${src}\n  漏提？git pull 一下`)
   }
-  if (!force) {
-    fail(
-      `目标已存在但与仓内版不一致：${dst}\n` +
-        `  这通常是因为改了 home 副本，没同步回仓。\n` +
+
+  // ─── 3. source 内禁止带个人路径（防回退污染，替换前检查） ──────────
+  const canonical = readFileSync(src, 'utf8')
+  for (const fb of FORBIDDEN_SUBSTRINGS) {
+    if (!fb) continue
+    if (canonical.includes(fb)) {
+      fail(
+        `源文件含个人路径 "${fb}"。\n` +
+        `  仓内配置必须用 __UNWR_ROOT__ 占位符，由本脚本在生成时内联真实路径。`,
+      )
+    }
+  }
+
+  // ─── 4. 占位符替换 → 实机内容 ─────────────────────────────────────
+  if (!canonical.includes('__UNWR_ROOT__')) {
+    fail(`源文件不含 __UNWR_ROOT__ 占位符：${src}\n  name 必须由占位符提供绝对路径，见文件头注释。`)
+  }
+  const rendered = canonical.replaceAll('__UNWR_ROOT__', absoluteRoot)
+
+  // ─── 5. 目标处理 ──────────────────────────────────────────────────
+  if (existsSync(dst)) {
+    const existing = readFileSync(dst, 'utf8')
+    if (existing === rendered) {
+      console.log(`✓ 已存在且一致：${dst}`)
+      continue
+    }
+    if (!force) {
+      fail(
+        `目标已存在但与生成结果不一致：${dst}\n` +
+        `  这通常是因为改了实机副本，没同步回仓。\n` +
         `  解决办法：\n` +
-        `    - 确认改动应该入仓 → 把 home 副本内容粘回 profiles/web/cordis.patch.yml 后重跑\n` +
+        `    - 确认改动应该入仓 → 把实机副本内容粘回对应 canonical 后重跑\n` +
         `    - 确认改动只是临时调试 → 加 --force 覆盖（目标会先备份成 .bak）`,
-    )
+      )
+    }
+    copyFileSync(dst, dst + '.bak')
+    console.log(`! 已备份: ${dst}.bak`)
   }
-  copyFileSync(dst, dst + '.bak')
-  console.log(`! 已备份: ${dst}.bak`)
+
+  mkdirSync(dirname(dst), { recursive: true })
+  writeFileSync(dst, rendered)
+  synced++
+  console.log(`✓ 已生成: ${dst}`)
 }
 
-copyFileSync(src, dst)
-console.log(`✓ 已同步:`)
-console.log(`    ${src}`)
-console.log(`  → ${dst}`)
 console.log()
-console.log('提醒：')
-console.log('  - 重启 DSH 实例使配置生效（cordis patch 不热重载）')
-console.log(`  - 确认 UNWR_ROOT 已 export（当前值：${process.env.UNWR_ROOT ?? '未设置'}）`)
-console.log('  - 启动日志出现 7 个 unwr-agent-* 插件即表示编排注册成功')
+if (synced > 0) {
+  console.log('提醒：')
+  console.log('  - 重启 DSH 实例使配置生效（cordis patch 不热重载）')
+  console.log(`  - UNWR_ROOT 当前值：${absoluteRoot}`)
+  console.log('  - 启动日志出现 7 个 unwr-agent-* 插件即表示编排注册成功')
+} else {
+  console.log('全部产物已是最新，无需重启。')
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UnWr · 无限写作工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23b03a2e'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23f5efe3' font-family='serif'%3E无%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="seal">无</span>
+      <span class="brand-name">UnWr<em>无限写作</em></span>
+    </a>
+    <div class="topbar-center">
+      <select id="work-switch" class="work-switch" title="切换作品"></select>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-new-work" class="btn ghost">＋ 新建作品</button>
+      <a id="dsh-link" class="btn ghost" href="http://localhost:3080" target="_blank" rel="noreferrer">DSH 会话 ↗</a>
+    </div>
+  </header>
+
+  <nav class="sidenav" id="sidenav" hidden>
+    <a href="#/w/_/write" data-nav="write"><i>✒</i>写作台</a>
+    <a href="#/w/_/agents" data-nav="agents"><i>☰</i>智能体</a>
+    <a href="#/w/_/checks" data-nav="checks"><i>◎</i>一致性检查</a>
+    <a href="#/w/_/memory" data-nav="memory"><i>▦</i>记忆与数据</a>
+  </nav>
+
+  <main id="main" class="main">
+    <div class="boot">正在连接飞书…</div>
+  </main>
+
+  <div id="modal-root"></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

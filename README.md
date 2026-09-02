@@ -74,7 +74,31 @@ node --import tsx/esm packages/feishu/scripts/smoke.ts
 
 # 为一部作品建齐 13 张表
 node --import tsx/esm packages/schema/scripts/init-work.ts <base_token>
+
+# 启动工作台（http://127.0.0.1:3311，PORT 可覆盖）
+pnpm workbench
 ```
+
+### 工作台（packages/web）
+
+零新依赖的本地驾驶舱：Node 内置 `http` 起服务，领域函数直连飞书；
+前端为原生 HTML/CSS/JS 单页（无构建步骤），视觉走「墨韵纸感」。
+
+| 界面 | 内容 |
+|---|---|
+| S0 作品总览 | 云盘扫描作品卡（题材/模式/进度）、新建作品（目录 + Base + 13 表） |
+| S1 写作台 | 卷/章树 · 正文阅读 · 章节状态流转 · 起草上下文面板（章纲/人物状态/相关设定/伏笔/记忆/题材指引） |
+| S2 智能体 | 8 角色卡（persona/toolFilter 直读 cordis.patch.yml，与 orchestration.spec 同源）· 委托指令生成器 |
+| S3 一致性检查 | 题材评审重点与权重条 · 规则检查（w_* 排序 + 阈值）· 语义清单 · 伏笔时限追踪 |
+| S4 记忆与数据 | 设定/人物/关系/剧情线/伏笔/事件/记忆索引/候选分支/人物状态时间线（只读） |
+
+职责边界：工作台**只读为主**，写操作仅限新建作品、写作模式切换、章节状态流转；
+正文起草与结构化数据写入仍由 DSH 智能体完成（评审官只读、起草官落库的
+权限模型不在工作台侧重复实现）。智能体面板的「委托指令生成器」产出符合
+主会话约定第 5 条的显式上下文委托文本，粘贴到 DSH 会话执行。
+
+角色展示数据直读 `profiles/web/cordis.patch.yml`（与编排层测试同一份真值），
+修改角色后刷新页面即生效，无需构建。
 
 ### 在 DSH 中运行
 
@@ -112,11 +136,11 @@ npx @deepseek-ai/dsh web      # 端口 3080
 **源码版 DSH**（可加载 `.ts`，适合开发）：
 
 ```bash
-export UNWR_ROOT=/path/to/UnWr   # cordis.yml 用此变量拼接插件路径
+export UNWR_ROOT=/path/to/UnWr
 
 cd /path/to/deepseek-harness
 node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
-  --patch $UNWR_ROOT/cordis.yml
+  --patch $UNWR_ROOT/dist/cordis.local.yml
 ```
 
 ## 已实现的工具（25 个）
@@ -204,10 +228,14 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 每个子代理拥有独立上下文、只看自己的工具白名单（`toolFilter.allow` 是硬约束），
 prompt 与规矩由子代理各自的 `persona` 字段约束，与主会话 system prompt 解耦。
 
-7 个 subagent 实例由仓内 `profiles/web/cordis.patch.yml` 注册，运行时不入仓，
-会通过 `pnpm sync:patch`（`scripts/sync-cordis-patch.mjs`）复制到
-`~/.dsh/profiles/web/cordis.patch.yml`。bundle 路径由 `process.env.UNWR_ROOT`
-拼接（与 `cordis.yml` 同款 `!!js` 表达式），不写死绝对路径。
+7 个 subagent 实例由仓内 `profiles/web/cordis.patch.yml` 注册，不入 git，
+由 `pnpm sync:patch`（`scripts/sync-cordis-patch.mjs`）生成实机副本到
+`~/.dsh/profiles/web/cordis.patch.yml`。**路径机制**：仓内 canonical 的
+`name` 用 `__UNWR_ROOT__` 占位符（保持零个人路径），sync 时替换为
+`UNWR_ROOT` 绝对路径。不能用 `!!js` 表达式在 YAML 里拼路径——
+loader（cordis-plugin-loader ≥ 1.0.3）只对 `config` / `disabled` 字段
+做 `!!js` 求值，`name` 会原样传给 `import()`，报
+`name.startsWith is not a function`（实机踩坑 2026-09-02）。
 
 | 子代理（toolName） | 角色 | 何时被委托 | 工具白名单 |
 |---|---|---|---|
@@ -233,9 +261,11 @@ persona 里的「只读约束」限制。真要硬隔离，需要把 `novel_mana
 ```bash
 export UNWR_ROOT=<仓库根绝对路径>
 pnpm build                       # 构建 dist/unwr-novel.mjs
-pnpm sync:patch                  # 同步 profiles/web/cordis.patch.yml → ~/.dsh/profiles/web/
+pnpm sync:patch                  # 占位符 → 绝对路径，生成两份实机副本：
+                                 #   ~/.dsh/profiles/web/cordis.patch.yml （npx 版）
+                                 #   dist/cordis.local.yml                （--patch overlay）
 node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
-  --patch $UNWR_ROOT/cordis.yml
+  --patch $UNWR_ROOT/dist/cordis.local.yml
 # 启动日志出现 7 个 unwr-agent-* 插件即表示编排注册成功
 ```
 
