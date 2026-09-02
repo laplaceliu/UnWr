@@ -1,5 +1,5 @@
 /**
- * 设定 / 人物 / 大纲 / 伏笔 / 卷 / 分支 的增删改查。
+ * 设定 / 人物 / 大纲 / 伏笔 / 卷 / 分支 / 关系 的增删改查。
  *
  * 这一层提供「先查后写」的 upsert 语义：按名称查找，存在则更新、不存在则创建。
  * 对模型来说这比「先 query 判断再决定 create/update」少一步，更不容易出错。
@@ -15,7 +15,7 @@ import { base } from '@unwr/feishu'
 import type { CellValue } from '@unwr/feishu'
 import {
   BRANCH_F, CHARACTER_F, CHAPTER_F, FORESHADOW_F, PLOTLINE_F,
-  SETTING_F, TABLE, VOLUME_F,
+  RELATION_F, SETTING_F, TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
 
@@ -500,6 +500,241 @@ export async function queryBranches(
     }))
     .filter((b) => b.title !== '')
     .filter((b) => options.adoptStatus === undefined || b.adoptStatus === options.adoptStatus)
+}
+
+/* ------------------------------------------------------------------ */
+/* 人物关系                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface RelationInput {
+  /** 人物 A 的姓名（必须是 CHARACTER 表里已有的）。 */
+  characterA: string
+  /** 人物 B 的姓名（必须是 CHARACTER 表里已有的）。 */
+  characterB: string
+  /** 关系类型：师徒 / 血亲 / 敌对 / 爱慕 / 同盟 / 利用。 */
+  type: string
+  description?: string
+  /** 起始章节号；用于"X 章起两人相识"。 */
+  startChapter?: number
+  /** 当前状态：存续 / 已破裂 / 已转化。 */
+  status?: string
+}
+
+/**
+ * 创建或更新一对人物关系。
+ *
+ * 去重 key = (characterA, characterB, type)：
+ *   - A→B 同类型关系**只允许一条**（避免师徒关系被复制粘贴出 N 份）。
+ *   - A→B 和 B→A 视为**同一条**（按字典序归一），写入时谁是 first 不影响去重。
+ *   - 同对角色不同关系（如既是师徒又是敌对）允许共存。
+ *
+ * 起始章节、状态、描述可单独 patch：tools 层应允许只传其中之一。
+ *
+ * @throws CHARACTER 表查不到 A 或 B 时抛错（要求建模前先建人物档案）。
+ */
+export async function upsertRelation(
+  baseToken: string,
+  input: RelationInput,
+  signal?: AbortSignal,
+): Promise<UpsertResult> {
+  if (input.characterA === '' || input.characterB === '') {
+    throw new Error('characterA 和 characterB 都必须提供。')
+  }
+  if (input.characterA === input.characterB) {
+    throw new Error('characterA 与 characterB 不能相同——人物不可能与自己建立关系。')
+  }
+
+  // 验证人物存在——避免关系指向幽灵角色。
+  const allChars = base.matrixToObjects(
+    await base.listAllRecords(baseToken, TABLE.CHARACTER, {
+      fieldIds: [CHARACTER_F.NAME],
+    }, signal),
+  )
+  const charNames = new Set(
+    allChars
+      .map((r) => str(r[CHARACTER_F.NAME]))
+      .filter((n) => n !== ''),
+  )
+  if (!charNames.has(input.characterA)) {
+    throw new Error(
+      `人物「${input.characterA}」在 CHARACTER 表中不存在。`
+      + `请先用 novel_manage_character(action=upsert) 建档。`,
+    )
+  }
+  if (!charNames.has(input.characterB)) {
+    throw new Error(
+      `人物「${input.characterB}」在 CHARACTER 表中不存在。`
+      + `请先用 novel_manage_character(action=upsert) 建档。`,
+    )
+  }
+
+  // 归一：A/B 字典序排序后再查，避免「李寻欢→阿飞」与「阿飞→李寻欢」重复入库。
+  const sortedPair: string[] = [input.characterA, input.characterB].sort((x, y) => x.localeCompare(y, 'zh-Hans-CN'))
+  const a: string = sortedPair[0] ?? input.characterA
+  const b: string = sortedPair[1] ?? input.characterB
+
+  const existing = await findRelation(baseToken, a, b, input.type, signal)
+  const fields: Fields = {
+    [RELATION_F.A]: a,
+    [RELATION_F.B]: b,
+    [RELATION_F.TYPE]: [input.type],
+  }
+  if (input.description !== undefined && input.description !== '') {
+    fields[RELATION_F.DESCRIPTION] = input.description
+  }
+  if (input.startChapter !== undefined && input.startChapter > 0) {
+    fields[RELATION_F.START_CHAPTER] = input.startChapter
+  }
+  if (input.status !== undefined && input.status !== '') {
+    fields[RELATION_F.STATUS] = [input.status]
+  }
+
+  if (existing !== undefined) {
+    await base.updateRecords(baseToken, TABLE.RELATION, { [existing]: fields }, signal)
+    return { recordId: existing, updated: true, warnings: [] }
+  }
+
+  const warnings: string[] = []
+  const ids = await createRecordsWithSelfHeal(baseToken, TABLE.RELATION, [fields], signal, (msg) => {
+    warnings.push(msg)
+  })
+  const recordId = ids[0]
+  if (recordId === undefined) {
+    throw new Error(`${TABLE.RELATION} 记录创建失败：未返回 record_id`)
+  }
+
+  await awaitVisible(
+    async () => (await findRelation(baseToken, a, b, input.type, signal)) === recordId,
+    signal,
+    (msg) => { warnings.push(msg) },
+  )
+
+  return { recordId, updated: false, warnings }
+}
+
+/**
+ * 按（归一后的 A,B,type）查找关系记录 ID。查不到返回 undefined。
+ */
+async function findRelation(
+  baseToken: string,
+  a: string,
+  b: string,
+  type: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  // RELATION_F.TYPE 是单选 select → 字段存为数组（与 SETTING_F.CATEGORY 同形），
+  // 飞书 list 过滤时按单字符串处理即可（select 单选在 list 层是普通字符串）。
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.RELATION, {
+      fieldIds: [RELATION_F.A, RELATION_F.B, RELATION_F.TYPE],
+      filter: {
+        logic: 'and',
+        conditions: [
+          [RELATION_F.A, '==', a],
+          [RELATION_F.B, '==', b],
+          [RELATION_F.TYPE, '==', type],
+        ],
+      },
+      limit: 1,
+    }, signal),
+  )
+  const id = rows[0]?.['__recordId']
+  return typeof id === 'string' ? id : undefined
+}
+
+/** 查询人物关系网。character 可选；不传则返回整部作品所有关系。 */
+export interface RelationRow {
+  a: string
+  b: string
+  type: string
+  status: string
+  description: string
+  startChapter: number
+}
+
+export async function queryRelations(
+  baseToken: string,
+  options: { character?: string; type?: string; status?: string } = {},
+  signal?: AbortSignal,
+): Promise<RelationRow[]> {
+  const rows = base.matrixToObjects(
+    await base.listAllRecords(baseToken, TABLE.RELATION, {
+      fieldIds: [
+        RELATION_F.A, RELATION_F.B, RELATION_F.TYPE,
+        RELATION_F.STATUS, RELATION_F.DESCRIPTION, RELATION_F.START_CHAPTER,
+      ],
+    }, signal),
+  )
+
+  return rows
+    .map((r) => ({
+      a: str(r[RELATION_F.A]),
+      b: str(r[RELATION_F.B]),
+      type: firstStr(r[RELATION_F.TYPE]),
+      status: firstStr(r[RELATION_F.STATUS]),
+      description: str(r[RELATION_F.DESCRIPTION]),
+      startChapter: num(r[RELATION_F.START_CHAPTER]),
+    }))
+    .filter((rel) => rel.a !== '' && rel.b !== '')
+    .filter((rel) => options.character === undefined || rel.a === options.character || rel.b === options.character)
+    .filter((rel) => options.type === undefined || rel.type === options.type)
+    .filter((rel) => options.status === undefined || rel.status === options.status)
+    .sort((x, y) => x.a.localeCompare(y.a, 'zh-Hans-CN') || x.b.localeCompare(y.b, 'zh-Hans-CN'))
+}
+
+/**
+ * 删除一条关系（按 A+B+type 三元组定位）。
+ *
+ * 安全说明：走**软删除**——把 description 标记为「已删除 @时间」，
+ * 状态字段改成"已破裂"，其余字段保留。避免误删后无法回溯，
+ * 也避免 tools 层暴露硬删除（readOnlySafeMode 下不应允许）。
+ */
+export async function deleteRelation(
+  baseToken: string,
+  characterA: string,
+  characterB: string,
+  type: string,
+  signal?: AbortSignal,
+): Promise<{ recordId: string | null }> {
+  const sortedPair: string[] = [characterA, characterB].sort((x, y) => x.localeCompare(y, 'zh-Hans-CN'))
+  const a: string = sortedPair[0] ?? characterA
+  const b: string = sortedPair[1] ?? characterB
+  const existing = await findRelation(baseToken, a, b, type, signal)
+  if (existing === undefined) {
+    return { recordId: null }
+  }
+  await base.updateRecords(baseToken, TABLE.RELATION, {
+    [existing]: {
+      [RELATION_F.STATUS]: ['已破裂'],
+      [RELATION_F.DESCRIPTION]: `[已删除] ${new Date().toISOString()}`,
+    },
+  }, signal)
+  return { recordId: existing }
+}
+
+/* ------------------------------------------------------------------ */
+/* 人物关系 → 注入上下文                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 取某人物涉及的全部关系，渲染成"- 王五（师徒 @第3章起）：养育之恩"行式字符串。
+ *
+ * 用于 context/builder.ts 注入"人物档案 → 关系网"节：
+ * 模型在动笔前就知道"李白跟杜甫是师徒"，不至于写岔。
+ */
+export async function renderRelationLines(
+  baseToken: string,
+  characterName: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const rels = await queryRelations(baseToken, { character: characterName }, signal)
+  return rels.map((r) => {
+    const other = r.a === characterName ? r.b : r.a
+    const statusSuffix = r.status === '存续' || r.status === '' ? '' : `（${r.status}）`
+    const chapterSuffix = r.startChapter > 0 ? ` @第${r.startChapter}章起` : ''
+    const descSuffix = r.description === '' ? '' : `：${r.description}`
+    return `- ${other}（${r.type}${statusSuffix}${chapterSuffix}）${descSuffix}`
+  })
 }
 
 /* ------------------------------------------------------------------ */

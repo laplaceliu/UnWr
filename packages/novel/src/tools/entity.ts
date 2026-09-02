@@ -1,5 +1,5 @@
 /**
- * 设定 / 人物 / 大纲 / 伏笔 / 剧情线 / 候选分支 的管理工具。
+ * 设定 / 人物 / 大纲 / 伏笔 / 剧情线 / 候选分支 / 关系网 的管理工具。
  *
  * **工具粒度说明**：这些工具都用 `action`（query / upsert）区分读写，
  * 而不是拆成 12 个独立工具。原因：模型在 20+ 工具里做选择时，
@@ -16,8 +16,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import {
   queryBranches, queryCharacters, queryForeshadows, queryOutline,
-  queryPlotlines, querySettings, setChapterOutline, upsertBranch,
-  upsertCharacter, upsertForeshadow, upsertPlotline, upsertSetting, upsertVolume,
+  queryPlotlines, queryRelations, querySettings, setChapterOutline, upsertBranch,
+  upsertCharacter, upsertForeshadow, upsertPlotline, upsertRelation, upsertSetting, upsertVolume,
+  deleteRelation,
 } from '../domain/entity.ts'
 import { resolveWorkToken } from './defaults.ts'
 
@@ -29,6 +30,7 @@ export function registerEntityTools(ctx: Context): void {
   registerForeshadow(ctx)
   registerPlotline(ctx)
   registerBranch(ctx)
+  registerRelation(ctx)
 }
 
 /* ------------------------------------------------------------------ */
@@ -384,6 +386,107 @@ function registerBranch(ctx: Context): void {
         ...args.note === undefined ? {} : { note: args.note },
       }, exec.signal)
       return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated }
+    },
+  }))
+}
+
+/* ------------------------------------------------------------------ */
+/* 关系网                                                                */
+/* ------------------------------------------------------------------ */
+
+function registerRelation(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'novel_manage_relation',
+    description: '管理人物关系网（RELATION 表）：师徒 / 血亲 / 敌对 / 爱慕 / 同盟 / 利用。'
+      + 'action="query" 查询某人物或整部作品的关系；action="upsert" 创建或更新一条关系；'
+      + 'action="delete" 软删除（A+B+type 三元组定位，状态置"已破裂" + 描述打"已删除"戳）。'
+      + '关系在动笔前注入上下文，模型能避免把"师徒"写成"敌对"这类崩坏。'
+      + '一对角色同一类型只能有一条关系（A↔B 视为同一条，按字典序归一）；不同类型允许共存。',
+    parameters: {
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
+      action: { type: 'string', enum: ['query', 'upsert', 'delete'], required: true },
+      // query 维度
+      character: { type: 'string', description: '查询某人物涉及的关系（query）。不传返回整部作品所有关系。' },
+      type: {
+        type: 'string', enum: ['师徒', '血亲', '敌对', '爱慕', '同盟', '利用'],
+        description: '关系类型（upsert 必填 / query 可选过滤）。',
+      },
+      status: {
+        type: 'string', enum: ['存续', '已破裂', '已转化'],
+        description: '当前状态（upsert 可选 / query 可选过滤）。',
+      },
+      // upsert 三元组
+      characterA: { type: 'string', description: '人物 A 姓名（upsert / delete 必填）。' },
+      characterB: { type: 'string', description: '人物 B 姓名（upsert / delete 必填）。' },
+      description: { type: 'string', description: '关系描述（upsert），如"养育之恩"、"亦敌亦友"。' },
+      startChapter: { type: 'number', description: '关系起始章节号（upsert），如"师徒关系自第 3 章起"。' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          action: { type: 'string', required: true },
+          total: { type: 'number', required: true },
+          items: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                a: { type: 'string', required: true },
+                b: { type: 'string', required: true },
+                type: { type: 'string', required: true },
+                status: { type: 'string', required: true },
+                description: { type: 'string' },
+                startChapter: { type: 'number' },
+              },
+            },
+          },
+          recordId: { type: 'string' },
+          updated: { type: 'boolean' },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
+    },
+    async execute(args, exec) {
+      const baseToken = resolveWorkToken(args)
+      if (args.action === 'query') {
+        const rows = await queryRelations(baseToken, {
+          character: args.character,
+          type: args.type,
+          status: args.status,
+        }, exec.signal)
+        return { action: 'query', total: rows.length, items: rows, warnings: [] }
+      }
+      if (args.action === 'upsert') {
+        if (args.characterA === undefined || args.characterA === ''
+          || args.characterB === undefined || args.characterB === ''
+          || args.type === undefined) {
+          throw new Error('upsert 需要 characterA / characterB / type 三者齐全。')
+        }
+        const r = await upsertRelation(baseToken, {
+          characterA: args.characterA,
+          characterB: args.characterB,
+          type: args.type,
+          description: args.description,
+          startChapter: args.startChapter,
+          status: args.status,
+        }, exec.signal)
+        return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated, warnings: r.warnings }
+      }
+      // delete
+      if (args.characterA === undefined || args.characterB === undefined || args.type === undefined) {
+        throw new Error('delete 需要 characterA / characterB / type 三者齐全。')
+      }
+      const r = await deleteRelation(baseToken, args.characterA, args.characterB, args.type, exec.signal)
+      return {
+        action: 'delete',
+        total: r.recordId === null ? 0 : 1,
+        items: [],
+        recordId: r.recordId ?? undefined,
+        updated: true,
+        warnings: r.recordId === null ? ['关系不存在，无需删除'] : [],
+      }
     },
   }))
 }
