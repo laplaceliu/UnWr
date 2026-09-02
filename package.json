@@ -20,7 +20,9 @@
     "test:watch": "vitest",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "smoke": "node --import tsx/esm packages/feishu/scripts/smoke.ts",
-    "setup:dsh": "node scripts/setup-dsh-links.mjs"
+    "setup:dsh": "node scripts/setup-dsh-links.mjs",
+    "sync:patch": "node scripts/sync-cordis-patch.mjs",
+    "build:profile": "node scripts/build-plugin.mjs && pnpm sync:patch"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

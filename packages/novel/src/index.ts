@@ -1,10 +1,11 @@
 /**
  * UnWr —— Unlimited Writing.
  *
- * 小说写作 AI 智能体的 DSH 工具插件：20 个 novel_* 领域工具。
+ * 小说写作 AI 智能体的 DSH 工具插件：25 个 novel_* 领域工具。
  *
  * 多智能体编排（7 个 novel_agent_* 委托工具）**不在这里注册**——
- * 由宿主配置层（~/.dsh/profiles/web/cordis.patch.yml）加载官方
+ * 由宿主配置层（profiles/web/cordis.patch.yml，运行时同步到
+ * ~/.dsh/profiles/web/cordis.patch.yml）加载官方
  * @deepseek-ai/dsh-tool-subagent 的 7 个实例实现，见该文件。
  * spawn provider 由宿主 dsh-base 内置。
  *

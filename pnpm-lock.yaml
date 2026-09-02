@@ -11,6 +11,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../dsh/vendor/cordis
         version: link:../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-subagent-spawn-in-process':
+        specifier: link:../../dsh/packages/subagent/subagent-spawn-in-process
+        version: link:../../dsh/packages/subagent/subagent-spawn-in-process
+      '@deepseek-ai/dsh-tool-subagent':
+        specifier: link:../../dsh/packages/subagent/tool-subagent
+        version: link:../../dsh/packages/subagent/tool-subagent
       '@deepseek-ai/dsh-tools':
         specifier: link:../../dsh/packages/core/tools
         version: link:../../dsh/packages/core/tools

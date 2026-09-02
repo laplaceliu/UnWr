@@ -119,7 +119,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
   --patch $UNWR_ROOT/cordis.yml
 ```
 
-## 已实现的工具（20 / 22）
+## 已实现的工具（25 个）
 
 | 工具 | 说明 |
 |------|------|
@@ -131,6 +131,8 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_record_character_state` | 记录人物章末状态快照（位置/伤势/情绪/持有物） |
 | `novel_record_event` | 记录事件索引（时间线、因果链） |
 | `novel_upsert_book_summary` | 写入卷级 / 全书摘要（长程压缩记忆） |
+| `novel_record_chapter_tension` | 记录本章张力曲线（开局/中段/结尾三档） |
+| `novel_mark_chapter_memories_stale` | 当章被大幅修订时，标记下游章节摘要为"陈旧" |
 | `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
 | `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
 
@@ -145,9 +147,15 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_manage_foreshadow` | 伏笔：query / upsert，含埋设与回收状态 |
 | `novel_manage_plotline` | 主线/支线剧情线：query / upsert |
 | `novel_manage_branch` | 卡文救援的候选分支：query / upsert（救援官） |
+| `novel_manage_relation` | 人物关系：query / upsert（含关系图检索） |
+| `novel_advance_character_arc` | 推进人物弧光曲线（魂牵梦绕→觉醒→抉择→牺牲→新生） |
+| `novel_breakthrough_planning` | 卡文时的突破性规划（与 `novel_manage_branch` 配合，思路→走向→成本） |
 
-待实现（2 个）：novel_export_work（导出）、novel_import_manuscript（导入）。
-见 `docs/tech/01-tech-selection.md` 第四节。
+详见 `docs/requirements/03-agent-matrix.md` 第四节（智能体→工具落点）。
+
+> 工具归属：
+> - `novel_manage_*` / `novel_revise_*` / `novel_read_*` 等高频读和改工具会被 7 个 `novel_agent_*` 子代理在各自白名单内复用（见 §编排）。
+> - 5 个相对低频工具（`novel_breakthrough_planning` / `novel_advance_character_arc` / `novel_record_chapter_tension` / `novel_mark_chapter_memories_stale` / `novel_manage_relation`）目前由主会话（主编排官）按需直接调用，未来可按需拆出独立子代理。
 
 ### 工具粒度：为什么用 action 而不是拆成 12 个工具
 
@@ -180,6 +188,45 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 
 理由：在工具里二次调用模型既贵又慢且难验证；而"人设崩了没有"这类
 判断本就该由正在写作的模型来做——它手上有完整正文上下文。
+
+## 编排（novel_agent_* 多智能体）
+
+**主编排官 = 主会话模型本身**（不单独注册）；它把任务委托给 7 个专职子代理。
+每个子代理拥有独立上下文、只看自己的工具白名单（`toolFilter.allow` 是硬约束），
+prompt 与规矩由子代理各自的 `persona` 字段约束，与主会话 system prompt 解耦。
+
+7 个 subagent 实例由仓内 `profiles/web/cordis.patch.yml` 注册，运行时不入仓，
+会通过 `pnpm sync:patch`（`scripts/sync-cordis-patch.mjs`）复制到
+`~/.dsh/profiles/web/cordis.patch.yml`。bundle 路径由 `process.env.UNWR_ROOT`
+拼接（与 `cordis.yml` 同款 `!!js` 表达式），不写死绝对路径。
+
+| 子代理（toolName） | 角色 | 工具白名单 |
+|---|---|---|
+| `novel_agent_worldkeeper` | 世界观设定官 | `novel_manage_setting`, `novel_read_chapter` |
+| `novel_agent_characterkeeper` | 人物官 | `novel_manage_character`, `novel_record_character_state`, `novel_read_chapter` |
+| `novel_agent_outliner` | 大纲官 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_build_context`, `novel_read_chapter` |
+| `novel_agent_drafter` | 起草官 | `novel_build_context`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event` |
+| `novel_agent_reviser` | 改稿官 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history` |
+| `novel_agent_critic` | 评审官 | `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
+| `novel_agent_rescuer` | 卡文救援官 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_read_chapter` |
+
+**`cordon 硬约束**：评审官的 `toolFilter` 里**没有任何写工具**——它只诊断不代笔。
+其余子代理各拿到的是该角色专属的最小权限集合。
+
+详见 `docs/requirements/03-agent-matrix.md` 第四节（工具落点表）。
+
+启用：
+```bash
+export UNWR_ROOT=<仓库根绝对路径>
+pnpm build                       # 构建 dist/unwr-novel.mjs
+pnpm sync:patch                  # 同步 profiles/web/cordis.patch.yml → ~/.dsh/profiles/web/
+node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
+  --patch $UNWR_ROOT/cordis.yml
+# 启动日志出现 7 个 unwr-agent-* 插件即表示编排注册成功
+```
+
+修改 persona / toolFilter：编辑 `profiles/web/cordis.patch.yml` → `pnpm sync:patch` → 重启实例。
+构建产物 `dist/unwr-novel.mjs` 不变，无需 `pnpm build`。
 
 ## 开发期踩坑记录
 
