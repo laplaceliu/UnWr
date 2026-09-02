@@ -147,6 +147,35 @@ describe.skipIf(!HAS_BASE)('端到端：真实飞书闭环', () => {
     })).rejects.toThrow(/已存在/)
   })
 
+  it('write → 给已有大纲章壳写入正文（破解死锁）', async () => {
+    // 大纲工具会自动建章壳（无 docUrl），write_chapter 应当能填充而不是拒绝。
+    // 见 novel_write_chapter 描述 (b) 分支。
+    const shellNo = chapterNo + 50
+    // 1. 先用 novel_manage_outline set_chapter_outline 建章壳
+    const setOutline = await run('novel_manage_outline', {
+      action: 'set_chapter_outline',
+      chapterNo: shellNo,
+      outline: '## 大纲要点\n1. 触发冲突场景\n2. 验证能落入正文',
+      storyTime: '三年后·秋',
+    })
+    expect(setOutline.created).toBe(true)
+    expect(typeof setOutline.recordId).toBe('string')
+
+    // 2. 写入正文：应走「填充正文」路径而非拒绝
+    const r = await run('novel_write_chapter', {
+      chapterNo: shellNo,
+      title: `[测试] 第${shellNo}章 死锁破除`,
+      content: '## 一、起\n\n大纲落地为正文。沈砚长出一口气。\n',
+    })
+    expect(r.chapterNo).toBe(shellNo)
+    expect(typeof r.documentId).toBe('string')
+    expect(typeof r.recordId).toBe('string')
+
+    // 3. 验证 read 能读到正文（之前 readChapter 会因无 docUrl 报错）
+    const read = await run('novel_read_chapter', { chapterNo: shellNo, mode: 'full' })
+    expect(read.content).toContain('大纲落地为正文')
+  })
+
   it('read → 能读回刚写的正文', async () => {
     const r = await run('novel_read_chapter', { chapterNo, mode: 'full' })
     expect(r.content).toContain('沈砚站在酒肆檐下')

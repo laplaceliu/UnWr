@@ -30,11 +30,16 @@ export function registerChapterTools(ctx: Context): void {
 function registerWriteChapter(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_write_chapter',
-    description: 'Create a new chapter: write the prose into a Feishu document and add its '
+    description: 'Write the prose for a chapter: create the Feishu document and add its '
       + 'index row (title, number, word count, status) to the chapter table. '
       + 'Use this after drafting with novel_build_context. '
-      + 'If the chapter already exists, this fails on purpose — use novel_append_chapter '
-      + 'to continue it or novel_revise_chapter to rewrite parts of it.',
+      + 'Three states are accepted: '
+      + '(a) chapter number is unused → creates a new document + index row; '
+      + '(b) chapter number exists but has no body document (an outline shell from '
+      + 'novel_manage_chapter set_outline) → fills the shell by creating the body document '
+      + 'and backfilling docUrl/words/status onto the existing row; '
+      + '(c) chapter number exists AND already has a body document → fails — use '
+      + 'novel_append_chapter to continue or novel_revise_chapter to rewrite parts.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       title: {
@@ -133,7 +138,10 @@ function registerAppendChapter(ctx: Context): void {
       const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
       const docUrl = rows.docUrl
       if (docUrl === undefined || docUrl === '') {
-        throw new Error(`第 ${args.chapterNo} 章没有正文文档链接，无法续写。`)
+        throw new Error(
+          `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
+          + '请先用 novel_write_chapter 写入正文，再来续写。',
+        )
       }
       const token = extractDocToken(docUrl)
       if (token === undefined) {
@@ -190,7 +198,10 @@ function registerReadChapter(ctx: Context): void {
     async execute(args, exec) {
       const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
       if (rows.docUrl === undefined || rows.docUrl === '') {
-        throw new Error(`第 ${args.chapterNo} 章没有正文文档链接。`)
+        throw new Error(
+          `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
+          + '请先用 novel_write_chapter 写入正文，再来阅读。',
+        )
       }
       const token = extractDocToken(rows.docUrl)
       if (token === undefined) {

@@ -174,9 +174,160 @@ export async function findChapterRecord(
 }
 
 /**
- * 新建一章。
+ * 读取某章的关键字段（含 DOC_URL）。
  *
- * 章节号冲突时抛错（改稿应走 revise 类工具，避免重复建文档）。
+ * 用途：writeChapter 在「章节已存在」分支判断是 shell 还是已写正文。
+ */
+async function readChapterShellFields(
+  baseToken: string,
+  chapterNo: number,
+  signal?: AbortSignal,
+): Promise<{ docUrl: string | undefined }> {
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.CHAPTER, {
+      fieldIds: [CHAPTER_F.NO, CHAPTER_F.DOC_URL],
+      filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
+      limit: 1,
+    }, signal),
+  )
+  const row = rows[0]
+  const url = row?.[CHAPTER_F.DOC_URL]
+  return { docUrl: typeof url === 'string' && url !== '' ? url : undefined }
+}
+
+/**
+ * 为已存在的章节壳填充正文。
+ *
+ * 触发场景：`setChapterOutline`（entity.ts）自动建章后，章节壳有 TITLE=`第 N 章` /
+ * OUTLINE / STORY_TIME / VOLUME 等元数据，但 NO DOC_URL。
+ *
+ * 行为：复用同一记录创建正文文档，回填 DOC_URL / WORDS / STATUS / TITLE；
+ * TITLE 总是用 params.title 覆盖（占位 title 无意义）；
+ * OUTLINE / STORY_TIME / VOLUME 仅在用户显式提供时覆盖——保留大纲官预填的内容。
+ *
+ * 若章节已有关联文档，抛错（应走 append/revise，不要重复建文档）。
+ */
+async function fillChapterShell(
+  baseToken: string,
+  chapterNo: number,
+  recordId: string,
+  params: WriteChapterParams,
+  normalizedContent: string,
+  words: number,
+  baseWarnings: string[],
+  _options: WriteChapterOptions,
+  signal?: AbortSignal,
+): Promise<WriteChapterResult> {
+  const warnings = [...baseWarnings]
+
+  // 1. 已有正文？→ 不属于「壳」场景，抛错让用户改走 append/revise
+  const { docUrl: existingDocUrl } = await readChapterShellFields(baseToken, chapterNo, signal)
+  if (existingDocUrl !== undefined) {
+    throw new Error(
+      `第 ${chapterNo} 章已存在且已有关联正文文档（记录 ${recordId}，文档 ${existingDocUrl}）。`
+      + '若要续写请用 novel_append_chapter，若要改写请用 novel_revise_chapter。',
+    )
+  }
+
+  // 2. 定位正文应挂载的父文件夹（卷文件夹 → 作品根文件夹）
+  const mount = await resolveChapterMount(baseToken, {
+    ...params.volume === undefined ? {} : { volume: params.volume },
+  }, signal)
+  warnings.push(...mount.warnings)
+
+  // 3. 创建正文文档（与 writeChapter 新建路径同源）
+  let doc: Awaited<ReturnType<typeof docs.createDoc>>
+  try {
+    doc = await docs.createDoc(
+      params.title,
+      normalizedContent,
+      mount.parentToken === undefined ? {} : { parentToken: mount.parentToken },
+      signal,
+    )
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/parent.*(not found|not exist)|not.*exist.*parent/i.test(msg) || mount.parentToken === undefined) throw e
+    warnings.push('作品目录已失效（可能被删除），本次正文落在「我的文档」根目录。'
+      + '请重新执行 novel_manage_work(action=link_folder) 修复目录。')
+    doc = await docs.createDoc(params.title, normalizedContent, {}, signal)
+  }
+  if (mount.parentToken === undefined) {
+    warnings.push('作品未挂接文档目录，正文已创建在「我的文档」根目录。'
+      + '可用 novel_manage_work(action=link_folder) 为作品创建目录，此后正文自动归位。')
+  }
+
+  // 4. 回填章节记录。
+  //    TITLE 总是覆盖（占位 `第 N 章` 无意义），WORDS/STATUS/DOC_URL 必定写入；
+  //    OUTLINE/STORY_TIME/VOLUME 仅在用户提供时覆盖（保留 setChapterOutline 的预填值）。
+  const fields: MutableFields = {
+    [CHAPTER_F.TITLE]: params.title,
+    [CHAPTER_F.WORDS]: words,
+    [CHAPTER_F.STATUS]: [params.status ?? CHAPTER_STATUS.DRAFT],
+    [CHAPTER_F.DOC_URL]: doc.url,
+    [CHAPTER_F.UPDATED_AT]: Date.now(),
+  }
+  if (params.outline !== undefined) fields[CHAPTER_F.OUTLINE] = params.outline
+  if (params.storyTime !== undefined) fields[CHAPTER_F.STORY_TIME] = params.storyTime
+
+  await updateRecordsWithSelfHeal(
+    baseToken, TABLE.CHAPTER, { [recordId]: fields }, signal,
+    (msg) => { warnings.push(msg) },
+  )
+
+  // 5. 「所属卷」link：用户显式提供 volume 且卷记录可用则回填；否则不动原值
+  if (params.volume !== undefined) {
+    const volumeRecordId = mount.volumeRecordId
+    if (volumeRecordId !== undefined) {
+      const visible = await awaitVisible(
+        async () => (await findVolumeRecordId(baseToken, params.volume!, signal)) === volumeRecordId,
+        signal,
+        () => {},
+      )
+      if (visible) {
+        await updateRecordsWithSelfHeal(
+          baseToken, TABLE.CHAPTER,
+          { [recordId]: { [CHAPTER_F.VOLUME]: [{ id: volumeRecordId }] } },
+          signal,
+          (msg) => { warnings.push(msg) },
+        )
+      } else {
+        warnings.push(`「${params.volume}」的卷记录迟迟不可见，「所属卷」未关联。`)
+      }
+    } else {
+      warnings.push(`「${params.volume}」的卷记录不可用，「所属卷」未关联。`)
+    }
+  }
+
+  // 6. 让紧随其后的 revise/append 命中缓存（章节号缓存 TTL=60s 解决 bitable
+  //    link 收敛延迟 ~6s+ 的问题，见 selfheal.ts:52080412）
+  rememberChapterRecordId(baseToken, chapterNo, recordId)
+
+  return {
+    chapterNo,
+    title: params.title,
+    documentId: doc.document_id,
+    documentUrl: doc.url,
+    recordId,
+    words,
+    warnings,
+  }
+}
+
+/**
+ * 新建一章，或为已建好的章壳填充正文。
+ *
+ * 两种入口都走本函数：
+ *   - 章节号未占用 → 新建文档 + 写入章节索引（old path）
+ *   - 章节号已占用但尚无正文文档 → 视为「填充正文」，复用同一条记录
+ *     创建文档并回填 docUrl/words/status（fillChapterShell）
+ *   - 章节号已占用且已有正文文档 → 拒绝（应走 append/revise）
+ *
+ * 为什么需要第二种入口：`setChapterOutline`（entity.ts）会自动建章壳，
+ * 壳里有 TITLE=`第 N 章` / OUTLINE / STORY_TIME / VOLUME 等元数据但 NO DOC_URL。
+ * 此前 append/revise/read 都因无 DOC_URL 拒绝，writeChapter 又因"章已存在"
+ * 拒绝——形成死锁（2026-09-02 实机复现：novel_write_chapter → 章节已存在；
+ * novel_append_chapter / novel_read_chapter / novel_revise_chapter → 无 DOC_URL）。
+ * 本函数打破之：让 writeChapter 在「壳」场景下也能创建文档。
  */
 export async function writeChapter(
   baseToken: string,
@@ -191,9 +342,8 @@ export async function writeChapter(
   const chapterNo = params.chapterNo ?? (await maxChapterNo(baseToken, signal)) + 1
   const existing = await findChapterRecord(baseToken, chapterNo, signal)
   if (existing !== undefined) {
-    throw new Error(
-      `第 ${chapterNo} 章已存在（记录 ${existing}）。`
-      + '若要续写请用 novel_append_chapter，若要改写请用 novel_revise_chapter。',
+    return await fillChapterShell(
+      baseToken, chapterNo, existing, params, normalized, words, warnings, options, signal,
     )
   }
 

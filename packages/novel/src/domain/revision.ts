@@ -121,7 +121,10 @@ export async function resolveChapterDoc(
   }
   const docUrl = row[CHAPTER_F.DOC_URL]
   if (typeof docUrl !== 'string' || docUrl === '') {
-    throw new Error(`第 ${chapterNo} 章没有正文文档链接，无法改稿。`)
+    throw new Error(
+      `第 ${chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
+      + '请先用 novel_write_chapter 写入正文，再来改稿。',
+    )
   }
   const token = extractDocToken(docUrl)
   if (token === undefined) {
