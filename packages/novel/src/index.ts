@@ -81,17 +81,35 @@ const WRITING_CONVENTIONS = `
    novel_update_summary（章节摘要）+ novel_record_character_state（出场人物
    章末状态）+ novel_record_event（关键事件）。跳过 = 后续章节失忆。
 3. **章节正文结构**：正文用 ## 划分场景，不写 # 一级标题（章标题由系统承担）。
-4. **职责边界**：复杂写作任务委托给 novel_agent_* 角色子代理（评审官只读、
-   起草官管成稿、改稿官管修订）；简单查询可直接调工具。
-5. **角色委托工具可用后台并行**：互不依赖的委托（如设定官+人物官）应放在
+4. **意图 → 角色路由**：复杂写作任务委托给对应的 novel_agent_* 角色子代理；
+   先查表再审意图，不确定的按最接近的选。
+
+   | 用户意图 | 委托给 |
+   |---|---|
+   | 想设定/体系/规则、查设定冲突 | novel_agent_worldkeeper（设定官） |
+   | 建/改人物档案、人物立不住、记章末状态 | novel_agent_characterkeeper（人物官） |
+   | 列大纲、分卷、伏笔埋收、剧情线 | novel_agent_outliner（大纲官） |
+   | 写第 N 章、续写、自动写完本卷 | novel_agent_drafter（起草官） |
+   | 改这段、扩写/缩写、换视角·人称·文风 | novel_agent_reviser（改稿官） |
+   | 看看有什么问题、评审、诊断 | novel_agent_critic（评审官） |
+   | 卡住了、接下来怎么走、要候选分支 | novel_agent_rescuer（救援官） |
+
+   「自动写完本卷」= 先委托大纲官出卷章要点，再逐章委托起草官，每章完成后
+   由主会话确认摘要/事件/人物状态已沉淀，然后进入下一章。
+   纯数据查询与单条 upsert 直接调工具即可，不必委托。
+5. **委托必须自带完整上下文**：子代理是**全新会话，看不到本对话**。委托的
+   prompt 里必须写全——作品名或 workToken、章节号、涉及的人物/场景名、
+   用户的原始意图与约束（如"冷峻些""保留悬念"）。只写"改一下第三章"
+   会让子代理选错作品或章节。
+6. **角色委托可后台并行**：互不依赖的委托（如设定官+人物官）应放在
    同一条消息里并行发起。
-6. **workToken 纪律**：所有工具的 workToken 都**可省略**（自动沿用会话默认
+7. **workToken 纪律**：所有工具的 workToken 都**可省略**（自动沿用会话默认
    作品）。30 位 base_token 手抄必错（实测单会话抄错 2 次），只在多作品间
    显式切换时才传入；抄错报 NOTEXIST 时用 novel_manage_work(action=list) 核对。
-7. **章节大纲的写入时机**：set_chapter_outline 依赖章节记录已存在。规划
+8. **章节大纲的写入时机**：set_chapter_outline 依赖章节记录已存在。规划
    章节级大纲时直接用 novel_write_chapter 的 outline 参数（或先写章再回填），
    **不要**在章节创建前批量调用 set_chapter_outline。
-8. **改稿纪律**：revise 的 patch/replace 失败时，不要反复用猜的 match 重试，
+9. **改稿纪律**：revise 的 patch/replace 失败时，不要反复用猜的 match 重试，
    也**绝不用占位文本（如 X）试探写工具**——会真实写入。先用
    novel_list_scenes 取场景/块结构化定位，再按块 ID 精确修改。
 `.trim()

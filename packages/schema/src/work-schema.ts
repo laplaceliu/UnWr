@@ -34,7 +34,8 @@ export interface FieldSchema {
 
 import {
   BRANCH_F, CHARACTER_F, CHARACTER_STATE_F, CHAPTER_F, EVENT_F, FORESHADOW_F,
-  ISSUE_F, MEMORY_F, PLOTLINE_F, RELATION_F, SETTING_F, TABLE, VOLUME_F, WORK_F,
+  ISSUE_F, MEMORY_F, PLOTLINE_F, RELATION_F, SETTING_F, SETTING_STATUS, TABLE,
+  VOLUME_F, WORK_F,
 } from './tables.ts'
 
 export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
@@ -109,7 +110,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: SETTING_F.DEFINITION, type: 'text' },
     { name: SETTING_F.IMPORTANCE, type: 'number', style: { type: 'rating', icon: 'star', min: 1, max: 5 } },
     { name: SETTING_F.DOC_URL, type: 'text', style: { type: 'url' } },
-    { name: SETTING_F.STATUS, type: 'select', multiple: false, options: [{ name: '生效' }, { name: '已废弃' }, { name: '待定' }] },
+    { name: SETTING_F.STATUS, type: 'select', multiple: false, options: [{ name: SETTING_STATUS.ACTIVE }, { name: SETTING_STATUS.DEPRECATED }, { name: SETTING_STATUS.PENDING }] },
   ],
   [TABLE.FORESHADOW]: [
     { name: FORESHADOW_F.CONTENT, type: 'text' },

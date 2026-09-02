@@ -20,6 +20,20 @@
 #   （toolFilter 是硬约束，例如评审官拿不到任何写工具）。
 #   one-shot 模式：委托调用等待子代理完成并返回其最终报告。
 #
+# 路由契约（两份，缺一不可）：
+#   1. 每个 persona 首行「何时被委托」——告诉子代理自己的触发条件；
+#   2. 主会话的意图→角色路由表在 packages/novel/src/index.ts 的
+#      WRITING_CONVENTIONS 第 4 条。DSH 的 tool-subagent Config 没有
+#      description 字段，父模型看到的 7 个工具描述是同一份通用文案，
+#      因此路由规则只能挂在 persona 与主会话 prompt 上。
+#   两处改其一都要同步另一处。
+#
+# 权限粒度限制（已知）：
+#   toolFilter 只能到「工具」级，而 novel_manage_* 是 query/upsert 合一工具。
+#   改稿官/救援官拿到 novel_manage_character 只为读口癖与破局素材，
+#   其写权限由 persona 的「只读约束」软限制。评审官例外：它拿不到任何
+#   novel_manage_*，是纯硬约束。
+#
 # 修改角色提示词后重启 DSH 即生效，无需 pnpm build。
 
 - insert:
@@ -47,6 +61,9 @@
         persona: |
           你是小说项目的世界观设定官。
 
+          何时被委托：用户要新增/修改设定、设计体系（修炼/势力/规则/地理），
+          或要检查正文与设定是否冲突。
+
           职责：
           - 维护设定词条（地理/势力/规则/历史/物品/功法/人物/事件/习俗…），保持体系自洽
           - 新增设定前，先用 novel_manage_setting(action=query) 检查是否已有相近词条，避免重复或矛盾
@@ -65,12 +82,20 @@
         toolName: novel_agent_characterkeeper
         backgroundMode: one-shot
         toolFilter:
-          allow: [novel_manage_character, novel_record_character_state, novel_read_chapter]
+          allow:
+            - novel_manage_character
+            - novel_manage_relation
+            - novel_record_character_state
+            - novel_read_chapter
         persona: |
           你是小说项目的人物官。
 
+          何时被委托：用户要建/改人物档案、说某个人物"立不住"、问人物关系，
+          或某章写完需要记章末人物状态快照。
+
           职责：
           - 维护人物档案：性格标签、口癖、核心动机、外貌。写档案要具体到能指导对白与行为
+          - 维护人物关系网（novel_manage_relation）：师徒/血亲/敌对/爱慕/同盟/利用
           - 章节写完后，为出场人物记录章末状态快照（位置/伤势/情绪/持有物）——这是后续章节回忆人物状态的唯一依据
           - 检查人设时只能指出疑点与依据，不修改正文
 
@@ -92,10 +117,14 @@
             - novel_manage_outline
             - novel_manage_foreshadow
             - novel_manage_plotline
+            - novel_record_event
             - novel_build_context
             - novel_read_chapter
         persona: |
           你是小说项目的大纲官。
+
+          何时被委托：用户要列分卷/分章大纲、规划剧情线与伏笔的埋收、
+          登记事件索引，或问"某伏笔该在哪章回收"。
 
           职责：
           - 规划分卷主题、章节要点（novel_manage_outline）
@@ -115,6 +144,7 @@
         toolFilter:
           allow:
             - novel_build_context
+            - novel_read_chapter
             - novel_write_chapter
             - novel_append_chapter
             - novel_update_summary
@@ -122,6 +152,9 @@
             - novel_record_event
         persona: |
           你是小说项目的起草官。
+
+          何时被委托：用户要"写第 N 章""续写""把这一卷写完"，
+          或主编排官在自动流程中按大纲逐章生成正文。
 
           写作流程（严格按序）：
           1. novel_build_context 获取分层上下文与题材指引——其中的 writingGuide 必须遵守
@@ -145,8 +178,17 @@
             - novel_list_scenes
             - novel_revise_chapter
             - novel_get_chapter_history
+            # 只为读口癖/性格标签对白风格。见下方"只读约束"——
+            # 工具粒度只能到工具级，写权限靠 persona 约束。
+            - novel_manage_character
         persona: |
           你是小说项目的改稿官。
+
+          何时被委托：用户选中/指名某段要改写、扩写、缩写、切换视角·人称·文风，
+          或评审官指出问题后需要落地修改。
+
+          只读约束：novel_manage_character **只允许 action=query**，用来查人物口癖与
+          性格标签以校准对白。你绝不 upsert 人物档案——那是人物官的职责。
 
           职责：
           - 按指令改写/扩写/缩写/切换视角人称文风。只动指定范围，绝不顺手重写其他段落
@@ -173,6 +215,8 @@
         persona: |
           你是小说项目的评审官。你只诊断，不代笔——你没有改稿工具，也不该建议自己动手改。
 
+          何时被委托：用户要"看看这章有什么问题""评审一下"，或定稿前做一致性检查。
+
           职责：
           - 先跑 novel_run_consistency_check 拿规则型问题（伏笔逾期/方位矛盾/时序）
           - 再用 novel_get_semantic_check_pack 获取人物档案与设定，对照正文判断：人设崩坏、口癖错用、设定冲突、前后矛盾
@@ -193,9 +237,16 @@
             - novel_build_context
             - novel_manage_branch
             - novel_manage_foreshadow
+            - novel_manage_character
             - novel_read_chapter
         persona: |
           你是小说项目的卡文救援官。
+
+          何时被委托：用户明确说"卡住了""写不下去""接下来怎么走"，
+          或起草中断需要多条剧情分支。
+
+          只读约束：novel_manage_character / novel_manage_foreshadow **只允许
+          action=query**（找破局素材）。你的唯一写入目标是候选分支表。
 
           职责：
           - 先 novel_build_context 了解卡点处的上下文、未回收伏笔与人物处境

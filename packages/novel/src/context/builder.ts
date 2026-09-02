@@ -20,7 +20,7 @@ import { base, docs } from '@unwr/feishu'
 import {
   CHAPTER_F, CHAPTER_STATUS, CHARACTER_F, CHARACTER_STATE_F,
   FORESHADOW_F, FORESHADOW_STATUS,
-  MEMORY_F, MEMORY_LEVEL, TABLE,
+  MEMORY_F, MEMORY_LEVEL, SETTING_F, SETTING_STATUS, TABLE,
 } from '@unwr/schema'
 import type { GenrePreset } from '@unwr/schema'
 
@@ -32,12 +32,15 @@ export interface MemoryLayers {
   summaryHorizon: number
   /** 未回收伏笔取 Top N */
   foreshadowLimit: number
+  /** L3 相关设定注入上限 */
+  settingLimit: number
 }
 
 export const DEFAULT_LAYERS: MemoryLayers = {
   recentFullChapters: 3,
   summaryHorizon: 12,
   foreshadowLimit: 20,
+  settingLimit: 20,
 }
 
 /** 一章的索引信息。 */
@@ -66,6 +69,8 @@ export interface NovelContext {
   bookSummaries: { level: string; title: string; content: string }[]
   /** L3：人物当前状态 */
   characterStates: { name: string; summary: string }[]
+  /** L3：与本章相关的设定词条 */
+  relevantSettings: { term: string; definition: string; importance: number }[]
   /** L3：未回收伏笔 */
   openForeshadows: { content: string; importance: number; plantedIn: string }[]
   /** 估算 token 量（按中文 1 字 ≈ 1.3 token 粗估） */
@@ -128,7 +133,7 @@ export async function buildContext(
   layers: MemoryLayers = DEFAULT_LAYERS,
   signal?: AbortSignal,
 ): Promise<NovelContext> {
-  const { recentFullChapters: K, summaryHorizon: M, foreshadowLimit } = layers
+  const { recentFullChapters: K, summaryHorizon: M, foreshadowLimit, settingLimit } = layers
 
   // 拉取章节索引、伏笔、记忆索引：三者互不依赖，并行
   //
@@ -136,7 +141,7 @@ export async function buildContext(
   // 实践中作品库可能尚未建齐全部 13 张表（如还没产生记忆索引），
   // 此时宁可少给上下文，也要让起草能继续。
   // 章节表用 listAllRecords 分页（长篇连载可达数百章，单页 200 不够）
-  const [chapterRows, foreshadowRows, memoryRows, characterStateRows, characterRows] = await Promise.all([
+  const [chapterRows, foreshadowRows, memoryRows, characterStateRows, characterRows, settingRows] = await Promise.all([
     safeRows(() => base.listAllRecords(baseToken, TABLE.CHAPTER, {
       fieldIds: [
         CHAPTER_F.TITLE, CHAPTER_F.NO, CHAPTER_F.STATUS, CHAPTER_F.WORDS,
@@ -171,6 +176,13 @@ export async function buildContext(
     }, signal)),
     safeRows(() => base.listAllRecords(baseToken, TABLE.CHARACTER, {
       fieldIds: [CHARACTER_F.NAME],
+    }, signal)),
+    // L3 相关设定：全量拉取后本地排序（词条通常几十条，比按关键词逐条查表便宜）
+    safeRows(() => base.listRecords(baseToken, TABLE.SETTING, {
+      fieldIds: [
+        SETTING_F.TERM, SETTING_F.DEFINITION, SETTING_F.IMPORTANCE, SETTING_F.STATUS,
+      ],
+      limit: 200,
     }, signal)),
   ])
 
@@ -265,12 +277,27 @@ export async function buildContext(
     }),
   )
 
+  // L3 相关设定：先取「本章大纲 + 近距原文 + 近期摘要 + 未回收伏笔」里点名
+  // 出现的词条（命中即相关），不足再按重要度补齐到 settingLimit。
+  const relevantSettings = rankSettings(
+    settingRows,
+    [
+      current?.outline ?? '',
+      ...recentContents.map((c) => c.content),
+      ...chapterSummaries.map((c) => c.summary),
+      ...openForeshadows.map((f) => f.content),
+    ].join('\n'),
+    settingLimit,
+  )
+
   const text = [
     current?.outline ?? '',
     ...recentContents.map((c) => c.content),
     ...chapterSummaries.map((c) => c.summary),
     ...bookSummaries.map((s) => s.content),
     ...openForeshadows.map((f) => f.content),
+    ...relevantSettings.map((s) => s.term + s.definition),
+    ...characterStates.map((s) => s.summary),
   ].join('')
 
   return {
@@ -281,7 +308,44 @@ export async function buildContext(
     chapterSummaries,
     bookSummaries,
     characterStates,
+    relevantSettings,
     openForeshadows,
     estimatedTokens: Math.round(text.length * 1.3),
   }
+}
+
+/**
+ * 设定相关性排序：作用域文本里点名出现的词条优先，余额按重要度补齐。
+ *
+ * 词条名多为 2-4 字专名，子串命中足够，不需要分词或向量检索。
+ * 「已废弃」词条一律排除——注入它会诱导模型写出与当前体系矛盾的描写。
+ */
+function rankSettings(
+  rows: Record<string, unknown>[],
+  scopeText: string,
+  limit: number,
+): { term: string; definition: string; importance: number }[] {
+  const candidates = rows
+    .map((r) => {
+      const statusValue = r[SETTING_F.STATUS]
+      return {
+        term: String(r[SETTING_F.TERM] ?? ''),
+        definition: String(r[SETTING_F.DEFINITION] ?? ''),
+        importance: typeof r[SETTING_F.IMPORTANCE] === 'number'
+          ? r[SETTING_F.IMPORTANCE] as number : 0,
+        status: Array.isArray(statusValue) ? String(statusValue[0] ?? '') : String(statusValue ?? ''),
+      }
+    })
+    .filter((s) => s.term !== '' && s.status !== SETTING_STATUS.DEPRECATED)
+
+  const byImportance = (a: { importance: number }, b: { importance: number }): number =>
+    b.importance - a.importance
+
+  const hits = candidates.filter((s) => scopeText.includes(s.term)).sort(byImportance)
+  const hitTerms = new Set(hits.map((s) => s.term))
+  const rest = candidates.filter((s) => !hitTerms.has(s.term)).sort(byImportance)
+
+  return [...hits, ...rest]
+    .slice(0, limit)
+    .map(({ term, definition, importance }) => ({ term, definition, importance }))
 }

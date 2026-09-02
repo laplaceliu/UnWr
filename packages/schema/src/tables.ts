@@ -104,6 +104,13 @@ export const SETTING_F = {
   STATUS: '状态',
 } as const
 
+/** 设定状态。 */
+export const SETTING_STATUS = {
+  ACTIVE: '生效',
+  DEPRECATED: '已废弃',
+  PENDING: '待定',
+} as const
+
 /** 伏笔表字段。 */
 export const FORESHADOW_F = {
   CONTENT: '伏笔内容',

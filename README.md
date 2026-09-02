@@ -123,7 +123,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 
 | 工具 | 说明 |
 |------|------|
-| `novel_build_context` | 组装起草某章所需的分层上下文（五层记忆 + 题材指引），内部并行拉取 |
+| `novel_build_context` | 组装起草某章所需的分层上下文（五层记忆 + 人物状态 + 相关设定 + 题材指引），内部并行拉取 |
 | `novel_write_chapter` | **新建章节**：建正文文档 + 写章节索引 + 可选建 Wiki 节点 |
 | `novel_read_chapter` | 读章节正文，支持 full / outline / keyword 三种模式 |
 | `novel_append_chapter` | 续写已有章节，并回写字数 |
@@ -151,11 +151,12 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_advance_character_arc` | 推进人物弧光曲线（魂牵梦绕→觉醒→抉择→牺牲→新生） |
 | `novel_breakthrough_planning` | 卡文时的突破性规划（与 `novel_manage_branch` 配合，思路→走向→成本） |
 
-详见 `docs/requirements/03-agent-matrix.md` 第四节（智能体→工具落点）。
+工具落点（哪个能力由谁负责）见 `docs/requirements/01-features-and-verification.md` 的 B/C/D/E/F/I/J 各组；
+角色职责与权限边界见 `docs/requirements/03-agent-matrix.md`。
 
 > 工具归属：
 > - `novel_manage_*` / `novel_revise_*` / `novel_read_*` 等高频读和改工具会被 7 个 `novel_agent_*` 子代理在各自白名单内复用（见 §编排）。
-> - 5 个相对低频工具（`novel_breakthrough_planning` / `novel_advance_character_arc` / `novel_record_chapter_tension` / `novel_mark_chapter_memories_stale` / `novel_manage_relation`）目前由主会话（主编排官）按需直接调用，未来可按需拆出独立子代理。
+> - 4 个相对低频工具（`novel_breakthrough_planning` / `novel_advance_character_arc` / `novel_record_chapter_tension` / `novel_mark_chapter_memories_stale`）目前由主会话（主编排官）按需直接调用，未来可按需拆出独立子代理。
 
 ### 工具粒度：为什么用 action 而不是拆成 12 个工具
 
@@ -200,20 +201,25 @@ prompt 与规矩由子代理各自的 `persona` 字段约束，与主会话 syst
 `~/.dsh/profiles/web/cordis.patch.yml`。bundle 路径由 `process.env.UNWR_ROOT`
 拼接（与 `cordis.yml` 同款 `!!js` 表达式），不写死绝对路径。
 
-| 子代理（toolName） | 角色 | 工具白名单 |
-|---|---|---|
-| `novel_agent_worldkeeper` | 世界观设定官 | `novel_manage_setting`, `novel_read_chapter` |
-| `novel_agent_characterkeeper` | 人物官 | `novel_manage_character`, `novel_record_character_state`, `novel_read_chapter` |
-| `novel_agent_outliner` | 大纲官 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_build_context`, `novel_read_chapter` |
-| `novel_agent_drafter` | 起草官 | `novel_build_context`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event` |
-| `novel_agent_reviser` | 改稿官 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history` |
-| `novel_agent_critic` | 评审官 | `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
-| `novel_agent_rescuer` | 卡文救援官 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_read_chapter` |
+| 子代理（toolName） | 角色 | 何时被委托 | 工具白名单 |
+|---|---|---|---|
+| `novel_agent_worldkeeper` | 世界观设定官 | 新增/修改设定、设计体系、查设定冲突 | `novel_manage_setting`, `novel_read_chapter` |
+| `novel_agent_characterkeeper` | 人物官 | 建/改人物档案、人物立不住、记章末状态 | `novel_manage_character`, `novel_manage_relation`, `novel_record_character_state`, `novel_read_chapter` |
+| `novel_agent_outliner` | 大纲官 | 列卷章大纲、伏笔埋收、剧情线与事件索引 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_record_event`, `novel_build_context`, `novel_read_chapter` |
+| `novel_agent_drafter` | 起草官 | 写第 N 章、续写、自动写完本卷 | `novel_build_context`, `novel_read_chapter`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event` |
+| `novel_agent_reviser` | 改稿官 | 改写/扩缩/换视角·人称·文风 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history`, `novel_manage_character`（只读） |
+| `novel_agent_critic` | 评审官 | 评审诊断、定稿前检查 | `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
+| `novel_agent_rescuer` | 卡文救援官 | 卡住了、要候选分支 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_manage_character`（只读）, `novel_read_chapter` |
 
-**`cordon 硬约束**：评审官的 `toolFilter` 里**没有任何写工具**——它只诊断不代笔。
-其余子代理各拿到的是该角色专属的最小权限集合。
+**硬约束**：评审官的白名单里**没有任何写工具**——它只诊断不代笔。
 
-详见 `docs/requirements/03-agent-matrix.md` 第四节（工具落点表）。
+**软约束**：`toolFilter` 粒度只到「工具」级，而 `novel_manage_*` 是 query/upsert 合一。
+改稿官与救援官拿到 `novel_manage_character` 只为**读**口癖与破局素材，其写权限由
+persona 里的「只读约束」限制。真要硬隔离，需要把 `novel_manage_*` 拆成
+`novel_query_*` / `novel_upsert_*` 两组工具——代价是工具数从 25 涨到 30+，
+与「工具越少越好选」的取舍相冲突，暂不做。
+
+详见 `docs/requirements/03-agent-matrix.md`（角色职责与权限）。
 
 启用：
 ```bash
@@ -227,6 +233,22 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 
 修改 persona / toolFilter：编辑 `profiles/web/cordis.patch.yml` → `pnpm sync:patch` → 重启实例。
 构建产物 `dist/unwr-novel.mjs` 不变，无需 `pnpm build`。
+
+### 路由契约（改一处必须同步另一处）
+
+DSH 的 `tool-subagent` Config **没有 `description` 字段**，父模型看到的 7 个委托工具
+描述是同一份通用文案，只能靠 `toolName` 区分。因此「什么意图该派给谁」写在两处：
+
+1. `packages/novel/src/index.ts` → `WRITING_CONVENTIONS` 第 4 条的**意图→角色路由表**
+   （主会话系统提示词，改它需要 `pnpm build`）
+2. `profiles/web/cordis.patch.yml` → 每个 persona 首行的**「何时被委托」**
+   （改它只需 `pnpm sync:patch` + 重启）
+
+### 委托时的上下文传递
+
+spawn provider 的 `inheritsParentContext = false`：子代理是**全新会话，看不到主对话**。
+委托 prompt 必须自带作品名或 workToken、章节号、涉及的人物/场景、用户的原始约束
+（见 `WRITING_CONVENTIONS` 第 5 条）。只写「改一下第三章」会让子代理选错作品或章节。
 
 ## 开发期踩坑记录
 

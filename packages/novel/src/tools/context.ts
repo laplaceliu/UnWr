@@ -26,6 +26,10 @@ interface ContextDigest {
   chapterSummaries: { no: number; title: string; summary: string }[]
   /** L2 卷/全书摘要 */
   bookSummaries: { level: string; title: string; content: string }[]
+  /** L3 出场人物章末状态（分层记忆 G3 的消费端） */
+  characterStates: { name: string; summary: string }[]
+  /** L3 与本章相关的设定词条（B6 设定检索注入） */
+  relevantSettings: { term: string; definition: string; importance: number }[]
   /** L3 未回收伏笔 */
   openForeshadows: { content: string; importance: number; plantedIn: string }[]
   /** 题材配置的写作指引 */
@@ -65,7 +69,8 @@ export function registerContextTool(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_build_context',
     description: 'Assemble the layered context needed to draft a chapter: recent full text, '
-      + 'chapter summaries, book-level summaries, unresolved foreshadowing, and the active '
+      + 'chapter summaries, book-level summaries, character end-of-chapter states, '
+      + 'related worldbuilding entries, unresolved foreshadowing, and the active '
       + 'genre preset. Call this before drafting a chapter.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
@@ -116,6 +121,27 @@ export function registerContextTool(ctx: Context): void {
               },
             },
           },
+          characterStates: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                summary: { type: 'string', required: true },
+              },
+            },
+          },
+          relevantSettings: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                term: { type: 'string', required: true },
+                definition: { type: 'string', required: true },
+                importance: { type: 'number', required: true },
+              },
+            },
+          },
           openForeshadows: {
             type: 'array', required: true,
             items: {
@@ -148,6 +174,8 @@ export function registerContextTool(ctx: Context): void {
         recentChapters: built.recentChapters,
         chapterSummaries: built.chapterSummaries,
         bookSummaries: built.bookSummaries,
+        characterStates: built.characterStates,
+        relevantSettings: built.relevantSettings,
         openForeshadows: built.openForeshadows,
         writingGuide: renderWritingGuide(preset),
         estimatedTokens: built.estimatedTokens,
