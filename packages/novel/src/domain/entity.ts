@@ -518,6 +518,47 @@ export interface RelationInput {
   startChapter?: number
   /** 当前状态：存续 / 已破裂 / 已转化。 */
   status?: string
+  /**
+   * 强行覆盖软删除戳：默认对已被 deleteRelation 标记的关系，
+   * upsertRelation 不会覆盖 status/description；需重新激活时传 true。
+   */
+  force?: boolean
+}
+
+/** 检测 description 字段是否已被 deleteRelation 打了 [已删除] 戳。 */
+const hasDeleteStamp = (description: unknown): boolean =>
+  typeof description === 'string' && description.includes('[已删除]')
+
+/**
+ * 读取关系现有描述与状态（用于软删除戳检测）。
+ */
+async function readRelationMeta(
+  baseToken: string,
+  a: string,
+  b: string,
+  type: string,
+  signal?: AbortSignal,
+): Promise<{ description: string; status: string } | undefined> {
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.RELATION, {
+      fieldIds: [RELATION_F.DESCRIPTION, RELATION_F.STATUS],
+      filter: {
+        logic: 'and',
+        conditions: [
+          [RELATION_F.A, '==', a],
+          [RELATION_F.B, '==', b],
+          [RELATION_F.TYPE, '==', type],
+        ],
+      },
+      limit: 1,
+    }, signal),
+  )
+  const row = rows[0]
+  if (row === undefined) return undefined
+  return {
+    description: str(row[RELATION_F.DESCRIPTION]),
+    status: firstStr(row[RELATION_F.STATUS]),
+  }
 }
 
 /**
@@ -529,6 +570,11 @@ export interface RelationInput {
  *   - 同对角色不同关系（如既是师徒又是敌对）允许共存。
  *
  * 起始章节、状态、描述可单独 patch：tools 层应允许只传其中之一。
+ *
+ * 软删除保护：若记录已被 `deleteRelation` 打了 `[已删除]` 戳，
+ * 后续 `upsertRelation` 默认**不会覆盖** status/description 字段，
+ * 防止误把删除戳抹平。startChapter 仍可更新（用于"这条关系从某章重新
+ * 发生"等用例）。需强行覆盖请传 `force: true`。
  *
  * @throws CHARACTER 表查不到 A 或 B 时抛错（要求建模前先建人物档案）。
  */
@@ -574,24 +620,41 @@ export async function upsertRelation(
   const b: string = sortedPair[1] ?? input.characterB
 
   const existing = await findRelation(baseToken, a, b, input.type, signal)
+  const existingMeta = existing !== undefined
+    ? await readRelationMeta(baseToken, a, b, input.type, signal)
+    : undefined
+  const wasDeleted = existingMeta !== undefined
+    && (hasDeleteStamp(existingMeta.description) || existingMeta.status === '已破裂')
+  const skipPreserve = wasDeleted && input.force !== true
+
   const fields: Fields = {
     [RELATION_F.A]: a,
     [RELATION_F.B]: b,
     [RELATION_F.TYPE]: [input.type],
   }
   if (input.description !== undefined && input.description !== '') {
-    fields[RELATION_F.DESCRIPTION] = input.description
+    // 软删除戳保护：保留 [已删除] 戳不被常规 upsert 抹平
+    if (!skipPreserve) {
+      fields[RELATION_F.DESCRIPTION] = input.description
+    }
   }
   if (input.startChapter !== undefined && input.startChapter > 0) {
+    // 起始章节允许在删除戳存在时仍然更新（用于"关系从 X 章重新发生"）
     fields[RELATION_F.START_CHAPTER] = input.startChapter
   }
   if (input.status !== undefined && input.status !== '') {
-    fields[RELATION_F.STATUS] = [input.status]
+    if (!skipPreserve) {
+      fields[RELATION_F.STATUS] = [input.status]
+    }
   }
+
+  const preservedWarning = skipPreserve
+    ? ['关系已被软删除，status/description 字段未覆盖（需传 force=true 强行更新）。']
+    : []
 
   if (existing !== undefined) {
     await base.updateRecords(baseToken, TABLE.RELATION, { [existing]: fields }, signal)
-    return { recordId: existing, updated: true, warnings: [] }
+    return { recordId: existing, updated: true, warnings: preservedWarning }
   }
 
   const warnings: string[] = []

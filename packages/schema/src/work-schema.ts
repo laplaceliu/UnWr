@@ -69,6 +69,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: CHAPTER_F.TENSION, type: 'number', style: { type: 'rating', icon: 'star', min: 1, max: 5 } },
     { name: CHAPTER_F.DOC_URL, type: 'text', style: { type: 'url' } },
     { name: CHAPTER_F.STORY_TIME, type: 'text' },
+    { name: CHAPTER_F.FOLDER_URL, type: 'text', style: { type: 'url' } },
   ],
   [TABLE.CHARACTER]: [
     { name: CHARACTER_F.NAME, type: 'text' },
@@ -86,6 +87,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: CHARACTER_F.APPEARANCE, type: 'text' },
     { name: CHARACTER_F.ARC_STAGE, type: 'text' },
     { name: CHARACTER_F.BIO_URL, type: 'text', style: { type: 'url' } },
+    { name: CHARACTER_F.PORTRAIT, type: 'attachment' },
   ],
   /** 人物状态快照：分层记忆 G3 的核心 */
   [TABLE.CHARACTER_STATE]: [
@@ -115,6 +117,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: FORESHADOW_F.STATUS, type: 'select', multiple: false, options: [{ name: '已埋设' }, { name: '已回收' }, { name: '已作废' }] },
     { name: FORESHADOW_F.IMPORTANCE, type: 'number', style: { type: 'rating', icon: 'star', min: 1, max: 5 } },
     { name: FORESHADOW_F.NOTE, type: 'text' },
+    { name: FORESHADOW_F.PLANT_CHAPTER_TITLES, type: 'text' },
   ],
   [TABLE.PLOTLINE]: [
     { name: PLOTLINE_F.NAME, type: 'text' },
@@ -136,6 +139,7 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
     { name: MEMORY_F.FROM_CHAPTER, type: 'number' },
     { name: MEMORY_F.TO_CHAPTER, type: 'number' },
     { name: MEMORY_F.CONTENT, type: 'text' },
+    { name: MEMORY_F.CREATED_AT, type: 'datetime' },
     { name: MEMORY_F.STALE, type: 'checkbox' },
   ],
   [TABLE.BRANCH]: [
@@ -160,6 +164,8 @@ export const TABLE_SCHEMAS: Record<string, FieldSchema[]> = {
 export const LINK_FIELDS: Record<string, { field: FieldSchema; targetTable: string }[]> = {
   [TABLE.CHAPTER]: [
     { field: { name: CHAPTER_F.VOLUME, type: 'link' }, targetTable: TABLE.VOLUME },
+    { field: { name: CHAPTER_F.CAST, type: 'link' }, targetTable: TABLE.CHARACTER },
+    { field: { name: CHAPTER_F.FORESHADOWS, type: 'link' }, targetTable: TABLE.FORESHADOW },
   ],
   [TABLE.CHARACTER]: [
     { field: { name: CHARACTER_F.APPEARANCES, type: 'link' }, targetTable: TABLE.CHAPTER },

@@ -420,6 +420,11 @@ function registerRelation(ctx: Context): void {
       characterB: { type: 'string', description: '人物 B 姓名（upsert / delete 必填）。' },
       description: { type: 'string', description: '关系描述（upsert），如"养育之恩"、"亦敌亦友"。' },
       startChapter: { type: 'number', description: '关系起始章节号（upsert），如"师徒关系自第 3 章起"。' },
+      force: {
+        type: 'boolean',
+        description: '仅 upsert 生效。当关系已被 delete 软删除时，传 true 强行覆盖 status/description 字段；'
+          + '默认 false 保留 [已删除] 戳避免误抹历史。',
+      },
     },
     output: {
       schema: {
@@ -471,6 +476,7 @@ function registerRelation(ctx: Context): void {
           description: args.description,
           startChapter: args.startChapter,
           status: args.status,
+          ...(args.force === undefined ? {} : { force: args.force }),
         }, exec.signal)
         return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated, warnings: r.warnings }
       }
