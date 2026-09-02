@@ -18,7 +18,8 @@
 
 import { base, docs } from '@unwr/feishu'
 import {
-  CHAPTER_F, CHAPTER_STATUS, FORESHADOW_F, FORESHADOW_STATUS,
+  CHAPTER_F, CHAPTER_STATUS, CHARACTER_F, CHARACTER_STATE_F,
+  FORESHADOW_F, FORESHADOW_STATUS,
   MEMORY_F, MEMORY_LEVEL, TABLE,
 } from '@unwr/schema'
 import type { GenrePreset } from '@unwr/schema'
@@ -135,7 +136,7 @@ export async function buildContext(
   // 实践中作品库可能尚未建齐全部 13 张表（如还没产生记忆索引），
   // 此时宁可少给上下文，也要让起草能继续。
   // 章节表用 listAllRecords 分页（长篇连载可达数百章，单页 200 不够）
-  const [chapterRows, foreshadowRows, memoryRows] = await Promise.all([
+  const [chapterRows, foreshadowRows, memoryRows, characterStateRows, characterRows] = await Promise.all([
     safeRows(() => base.listAllRecords(baseToken, TABLE.CHAPTER, {
       fieldIds: [
         CHAPTER_F.TITLE, CHAPTER_F.NO, CHAPTER_F.STATUS, CHAPTER_F.WORDS,
@@ -159,6 +160,18 @@ export async function buildContext(
       ],
       limit: 200,
     }, signal)),
+    // L3 人物当前状态：取每人在 chapterNo 之前的最新一条
+    safeRows(() => base.listRecords(baseToken, TABLE.CHARACTER_STATE, {
+      fieldIds: [
+        CHARACTER_STATE_F.CHARACTER, CHARACTER_STATE_F.SUMMARY,
+        CHARACTER_STATE_F.LOCATION, CHARACTER_STATE_F.PHYSICAL,
+        CHARACTER_STATE_F.EMOTION, CHARACTER_STATE_F.BELONGINGS,
+      ],
+      limit: 500,
+    }, signal)),
+    safeRows(() => base.listAllRecords(baseToken, TABLE.CHARACTER, {
+      fieldIds: [CHARACTER_F.NAME],
+    }, signal)),
   ])
 
   const chapters = chapterRows.map(toChapterRef).sort((a, b) => a.no - b.no)
@@ -181,7 +194,52 @@ export async function buildContext(
       content: String(r[MEMORY_F.CONTENT] ?? ''),
     }))
 
-  // L3 未回收伏笔
+  // L3 人物当前状态：取每人在 chapterNo 之前的最新一条
+  // （CHARACTER_STATE 行通过 CHARACTER_STATE_F.CHAPTER link 字段引用章节，
+  //   我们用 chapterRows 反查章节号）
+  const characterNameByRecordId = new Map<string, string>()
+  for (const row of characterRows) {
+    const name = row[CHARACTER_F.NAME]
+    const id = row['__recordId']
+    if (typeof name === 'string' && typeof id === 'string') {
+      characterNameByRecordId.set(id, name)
+    }
+  }
+  const chapterNoByRecordId = new Map<string, number>()
+  for (const row of chapterRows) {
+    const id = row['__recordId']
+    const no = row[CHAPTER_F.NO]
+    if (typeof id === 'string' && typeof no === 'number') {
+      chapterNoByRecordId.set(id, no)
+    }
+  }
+  const latestStateByName = new Map<string, { name: string; summary: string; chapterNo: number }>()
+  for (const row of characterStateRows) {
+    const charRef = row[CHARACTER_STATE_F.CHARACTER]
+    const charRecordId = Array.isArray(charRef) ? charRef[0] : charRef
+    const name = typeof charRecordId === 'string' ? characterNameByRecordId.get(charRecordId) : undefined
+    if (name === undefined) continue
+    const chapterRef = row[CHARACTER_STATE_F.CHAPTER]
+    const chapterRecordId = Array.isArray(chapterRef) ? chapterRef[0] : chapterRef
+    const chapterNoValue = typeof chapterRecordId === 'string'
+      ? chapterNoByRecordId.get(chapterRecordId) ?? null
+      : null
+    if (chapterNoValue !== null && chapterNoValue > chapterNo) continue
+    const existing = latestStateByName.get(name)
+    const existingNo = existing?.chapterNo ?? -1
+    if (chapterNoValue === null || chapterNoValue >= existingNo) {
+      latestStateByName.set(name, {
+        name,
+        chapterNo: chapterNoValue ?? 0,
+        summary: String(row[CHARACTER_STATE_F.SUMMARY] ?? ''),
+      })
+    }
+  }
+  const characterStates = Array.from(latestStateByName.values())
+    .map((s) => ({ name: s.name, summary: s.summary }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+
+// L3 未回收伏笔
   const openForeshadows = foreshadowRows.map((r) => ({
     content: String(r[FORESHADOW_F.CONTENT] ?? ''),
     importance: typeof r[FORESHADOW_F.IMPORTANCE] === 'number'
@@ -222,7 +280,7 @@ export async function buildContext(
     recentChapters: recentContents.filter((c) => c.content !== ''),
     chapterSummaries,
     bookSummaries,
-    characterStates: [],
+    characterStates,
     openForeshadows,
     estimatedTokens: Math.round(text.length * 1.3),
   }

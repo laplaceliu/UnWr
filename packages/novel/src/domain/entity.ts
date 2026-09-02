@@ -14,8 +14,8 @@
 import { base } from '@unwr/feishu'
 import type { CellValue } from '@unwr/feishu'
 import {
-  BRANCH_F, CHARACTER_F, CHAPTER_F, FORESHADOW_F, PLOTLINE_F,
-  RELATION_F, SETTING_F, TABLE, VOLUME_F,
+  BRANCH_F, CHARACTER_F, CHAPTER_F, FORESHADOW_F, MEMORY_F, MEMORY_LEVEL,
+  PLOTLINE_F, RELATION_F, SETTING_F, TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
 
@@ -310,6 +310,88 @@ export async function setChapterOutline(
   if (options.storyTime !== undefined) fields[CHAPTER_F.STORY_TIME] = options.storyTime
   await base.updateRecords(baseToken, TABLE.CHAPTER, { [recordId]: fields }, signal)
   return { recordId, chapterNo }
+}
+
+/**
+ * 写入章节的张力评分（1-5 星）。
+ *
+ * 写入时机：
+ *   - 章节状态由草稿→修订/定稿时由评审官或主编排官调用
+ *   - 张力评分会进入 L0 上下文，用于「上一章张力曲线是否在本章延续」的判定
+ *
+ * 边界：
+ *   - `score` 必须为 1-5 整数；越界会被钳制并写入警告
+ *   - 章节不存在时抛错（要求建模前先建章节）
+ */
+export async function setChapterTension(
+  baseToken: string,
+  chapterNo: number,
+  score: number,
+  signal?: AbortSignal,
+): Promise<{ recordId: string; chapterNo: number; score: number; warnings: string[] }> {
+  const recordId = await findChapterRecordId(baseToken, chapterNo, signal)
+  if (recordId === undefined) {
+    throw new Error(`第 ${chapterNo} 章不存在，无法写入张力评分。请先用 novel_write_chapter 创建。`)
+  }
+  const clamped = Math.max(1, Math.min(5, Math.round(score)))
+  const warnings: string[] = []
+  if (clamped !== score) warnings.push(`张力评分已从 ${score} 钳制到 ${clamped}（合法范围 1-5）`)
+  await base.updateRecords(baseToken, TABLE.CHAPTER, { [recordId]: { [CHAPTER_F.TENSION]: clamped } }, signal)
+  return { recordId, chapterNo, score: clamped, warnings }
+}
+
+/**
+ * 把覆盖某章区间的记忆条目批量置为「已过期」。
+ *
+ * 触发时机（05 文档 4.1 表第 2 行）：
+ *   - 章节正文被改动后，主编排官调度此工具 → 区间内所有 MEMORY 记录 STALE=true
+ *   - 之后重新生成章节摘要（覆盖 G6 流程）
+ *
+ * 选区规则：
+ *   - LEVEL=章节：from<=to 且 to>=fromChapter 且 from<=toChapter 的都受影响
+ *     （即与被改章节区间有交集）
+ *   - LEVEL=卷：from<=fromChapter 的所有卷级摘要（粗粒度，卷级重写代价低）
+ *   - LEVEL=全书：全部（全书级摘要一定依赖被改章节）
+ *
+ * @returns 受影响记录数 + 警告（无记录时为 warning）
+ */
+export async function markMemoriesStaleForChapter(
+  baseToken: string,
+  chapterNo: number,
+  signal?: AbortSignal,
+): Promise<{ affected: number; warnings: string[] }> {
+  const warnings: string[] = []
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.MEMORY, {
+      fieldIds: [MEMORY_F.LEVEL, MEMORY_F.FROM_CHAPTER, MEMORY_F.TO_CHAPTER, MEMORY_F.STALE],
+      limit: 500,
+    }, signal),
+  )
+  const updates: Record<string, { [MEMORY_F.STALE]: true }> = {}
+  for (const row of rows) {
+    const lvl = String(row[MEMORY_F.LEVEL] ?? '')
+    const id = row['__recordId']
+    if (typeof id !== 'string') continue
+    const from = typeof row[MEMORY_F.FROM_CHAPTER] === 'number' ? row[MEMORY_F.FROM_CHAPTER] as number : null
+    const to = typeof row[MEMORY_F.TO_CHAPTER] === 'number' ? row[MEMORY_F.TO_CHAPTER] as number : null
+    let hit = false
+    if (lvl === MEMORY_LEVEL.BOOK) {
+      hit = true
+    } else if (lvl === MEMORY_LEVEL.VOLUME) {
+      hit = from === null || from <= chapterNo
+    } else {
+      // CHAPTER 级别：区间与 chapterNo 有交集
+      hit = from !== null && to !== null && from <= chapterNo && chapterNo <= to
+    }
+    if (hit && row[MEMORY_F.STALE] !== true) {
+      updates[id] = { [MEMORY_F.STALE]: true }
+    }
+  }
+  if (Object.keys(updates).length === 0) {
+    return { affected: 0, warnings: ['无记忆需要标记为过期。'] }
+  }
+  await base.updateRecords(baseToken, TABLE.MEMORY, updates, signal)
+  return { affected: Object.keys(updates).length, warnings }
 }
 
 /** 按章节号取章节记录 ID。 */

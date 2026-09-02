@@ -26,6 +26,7 @@ import { registerEntityTools } from './tools/entity.ts'
 import { registerWorkTools } from './tools/work.ts'
 import { registerBreakthroughTools } from './tools/breakthrough.ts'
 import { registerCharacterArcTools } from './tools/character-arc.ts'
+import { registerTensionTools } from './tools/tension.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools', 'systemPrompt']
@@ -110,6 +111,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerWorkTools(ctx)
   registerBreakthroughTools(ctx)
   registerCharacterArcTools(ctx)
+  registerTensionTools(ctx)
 
   // 向主会话注入写作约定。
   // text 是惰性函数：DSH 组装 prompt 时才调用。作用域检查用官方同款
