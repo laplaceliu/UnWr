@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import {
   queryBookSummaries, recordCharacterState, recordEvent, updateChapterSummary, upsertBookSummary,
+  type ChapterSummaryInput,
 } from '../domain/memory.ts'
 import { resolveWorkToken } from './defaults.ts'
 
@@ -29,63 +30,143 @@ export function registerMemoryTools(ctx: Context): void {
 }
 
 /**
- * 一次性给出 newInfo 在工具历史里被传错的所有形态，便于
- * execute 入口识别模型"把别的字段塞进 newInfo 对象"这一最常见
+ * 一次性给出 string-array 字段在工具历史里被传成"对象"的所有已知错形态键，
+ * 便于 execute 入口识别模型"把别的字段塞进这个字段"这一最常见
  * 失误（实机 2026-09-03 第 10 章：模型把
- * `{item, newForeshadows, endState, freeform}` 整个当成 newInfo 传），
- * 抛一条自纠正的报错让模型下一轮自己改对。
+ * `{item, newForeshadows, endState, freeform}` 整个当成 newInfo 传；
+ * 实机 2026-09-03 第 11 章：模型同样把整套平级字段塞进 characterChanges，
+ * 还嵌套一层 `characterChanges: {...}`）。
+ *
+ * 注意：**任何 string-array 字段名都列入错键集**——模型只要把平级字段误装进
+ * 另一个 string-array 字段，被误装的那个字段本身在对象里出现，就是错形态。
  */
-const NEW_INFO_MISTAKE_KEYS = new Set([
+const STRING_ARRAY_MISTAKE_KEYS = new Set([
   'item',
   'newForeshadows',
+  'newInfo',
   'endState',
   'freeform',
   'foreshadows',
   'info',
   'new_info',
+  'characterChanges',
+  'events',
+  'scene',
 ])
 
-/** 自纠正：newInfo 传成对象时给模型的"正确 JSON 示例"提示。 */
-const SHAPE_HINT = `newInfo 必须是字符串数组（每条一句本章揭示的新信息）。
-你是不是把 newForeshadows / endState / freeform 嵌进了 newInfo 对象里？它们都是
-与 newInfo 平级的"顶层字段"，请按下面的扁平结构传参：
+/**
+ * 通用自纠正：任意 string-array 字段被传成对象时给模型的"正确 JSON 示例"提示。
+ * 通过 validateShape(field, value) 集中识别+抛错，避免每个字段各写一段。
+ *
+ * 实机 2026-09-03 第 11 章：模型把
+ * `characterChanges: { item: ..., characterChanges: { newInfo, newForeshadows, endState, freeform } }`
+ * 整个对象当成 characterChanges。DSH 顶层 type:'array' 校验直接拒，
+ * 模型完全看不到正确示例——盲试改错。修复：放宽 schema + 加对象形态自纠正。
+ */
+const SHAPE_HINT_BODY = `你是不是把 newInfo / newForeshadows / endState / freeform /
+characterChanges / events 这些平级顶层字段塞进了这个字段的对象里？所有字段
+（scene / events / characterChanges / newInfo / newForeshadows / endState /
+freeform）都是顶层扁平，不要嵌套——尤其不要把同名字段再嵌一层。
 
+正确示例（请**逐字段**核对哪些键该在哪里）：
 {
-  "chapterNo": 10,
-  "scene": "景和十一年 仲春 十四 夜，齐王府门前、洗骨司明堂。",
-  "events": ["..."],
-  "characterChanges": ["..."],
+  "chapterNo": 11,
+  "scene": "开元四十一年 三月十三 晨,西市杂号柜坊门口、账房。",
+  "events": ["第 1 件", "第 2 件"],
+  "characterChanges": ["甲:状态 A→B", "乙:状态 C→D"],
   "newInfo": ["新信息 1", "新信息 2"],
   "newForeshadows": ["新伏笔 1", "新伏笔 2"],
-  "endState": "章末状态：…",
+  "endState": "章末状态:…",
   "freeform": "其它值得记住的"
 }
 
 参考：docs/requirements/05-memory-and-consistency.md 第 2 节「分层记忆结构」
 与 packages/novel/src/domain/memory.ts 的 chapterSummaryRecord 形状。`
 
+/**
+ * 校验 string-array 字段实际形态。命中已知错形态键 → 抛含 SHAPE_HINT_BODY
+ * 的自纠正错误，把"字段名"放前面让模型精确定位错的字段。
+ */
+function validateShape(field: string, value: unknown): void {
+  if (value === undefined || value === null) return
+  if (Array.isArray(value)) return
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const keys = Object.keys(obj)
+    const mistakeHit = keys.some((k) => STRING_ARRAY_MISTAKE_KEYS.has(k))
+    if (mistakeHit || keys.length > 0) {
+      throw new Error(
+        `字段「${field}」必须是字符串数组（每条一句），你传成对象/嵌套结构了。
+`
+        + SHAPE_HINT_BODY,
+      )
+    }
+    throw new Error(`字段「${field}」收到空对象 ${JSON.stringify(obj)}，必须是字符串数组。`)
+  }
+  throw new Error(
+    `字段「${field}」必须是字符串数组，你传的是 ${typeof value} 而不是字符串数组。`,
+  )
+}
+
 function registerUpdateSummary(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_update_summary',
     description: 'Write or update the structured summary of a chapter. '
-      + 'CALL THIS AFTER FINISHING A CHAPTER — without it, later chapters cannot recall '
-      + 'what happened here. Fill as many structured fields as you can. '
-      + 'All structured fields below are flat top-level keys on the parameters object — '
-      + 'do NOT nest newForeshadows / endState / freeform inside newInfo. '
+      + 'CALL THIS AFTER FINISHING A CHAPTER — without it, later chapters cannot recall what happened here. '
+      + 'Fill as many structured fields as you can. '
+      + 'All structured fields below are FLAT TOP-LEVEL keys — '
+      + 'characterChanges / events / newInfo / newForeshadows / endState / freeform are all SIBLING keys, '
+      + 'not nested inside each other. If you find yourself writing '
+      + '`field: { item, ... }`, stop — flatten it: `field: ["..."]` and put the rest on the same level. '
       + 'Correct shape example: '
       + '{"chapterNo":1, "scene":"...", "events":["..."], "characterChanges":["..."], '
-      + '"newInfo":["..."], "newForeshadows":["..."], "endState":"...", "freeform":"..."}.',
+      + '"newInfo":["..."], "newForeshadows":["..."], "endState":"...", "freeform":"..."}',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       scene: { type: 'string', description: 'When and where this chapter takes place.' },
-      events: {
-        type: 'array', items: { type: 'string' },
-        description: 'What happened, in order (3-5 items).',
-      },
+      // 同 newInfo：放宽为 oneOf 让对象能进 execute 触发自纠正。
+      // 实机 2026-09-03 第 11 章：模型把全套平级字段（item/characterChanges/newInfo/newForeshadows/endState/freeform）
+      // 塞进 characterChanges 对象里，DSH 顶层 array 校验直接拒。
       characterChanges: {
-        type: 'array', items: { type: 'string' },
-        description: 'How each character changed in this chapter.',
+        oneOf: [
+          {
+            type: 'array', items: { type: 'string' },
+            description: '本章每个人的状态变化，每条一行的字符串数组',
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '每个人在本章里的状态变化（如 "甲:状态 A→B"）。必须是顶层扁平字符串数组，'
+          + '**不要**把 newForeshadows / newInfo / endState / freeform 塞进 characterChanges 对象里。',
+      },
+      events: {
+        oneOf: [
+          {
+            type: 'array', items: { type: 'string' },
+            description: '本章发生事件 3-5 条，每条一行的字符串数组',
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '本章发生了什么（按顺序 3-5 条）。必须是顶层扁平字符串数组。',
+      },
+      newForeshadows: {
+        oneOf: [
+          {
+            type: 'array', items: { type: 'string' },
+            description: '本章新埋下的伏笔 0-N 条，每条一行的字符串数组',
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '本章新埋的伏笔。必须是顶层扁平字符串数组，不要嵌进 newInfo/characterChanges。',
       },
       // 实机 2026-09-03 第 10 章：模型曾把
       // `{item, newForeshadows, endState, freeform}` 整个当成 newInfo 传，
@@ -107,10 +188,7 @@ function registerUpdateSummary(ctx: Context): void {
         ],
         description: '本章新揭示的信息（字符串数组，每条一句）。必须是顶层字段，不要把 newForeshadows / endState / freeform 塞进 newInfo 对象。',
       },
-      newForeshadows: {
-        type: 'array', items: { type: 'string' },
-        description: 'New foreshadowing planted in this chapter. 顶层字段，不要嵌进 newInfo。',
-      },
+
       endState: { type: 'string', description: 'Situation and open questions at chapter end. 顶层字段，不要嵌进 newInfo。' },
       freeform: { type: 'string', description: 'Anything else worth remembering. 顶层字段，不要嵌进 newInfo。' },
     },
@@ -126,41 +204,34 @@ function registerUpdateSummary(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      // 实机 2026-09-03：模型曾传 `newInfo: {item, newForeshadows, endState, freeform}`
-      // ——把别的字段塞进了 newInfo 对象。schema 放宽后这里专门防这种失误：
-      // 命中 NEW_INFO_MISTAKE_KEYS 里的任意一个键 → 抛自纠正错误并给完整
-      // 正确 JSON 示例，让模型下一轮能自己改对。命中非空但不含错形态键
-      // 的对象（比如未来的演化字段）→ 走"不是数组"通用路径。
-      if (args.newInfo !== undefined && args.newInfo !== null) {
-        if (Array.isArray(args.newInfo)) {
-          // 正常分支
-        } else if (typeof args.newInfo === 'object') {
-          const obj = args.newInfo as Record<string, unknown>
-          const keys = Object.keys(obj)
-          const mistakeHit = keys.some((k) => NEW_INFO_MISTAKE_KEYS.has(k))
-          // 即使没命中已知键，凡是 object 形态的 newInfo 都是模型对
-          // schema 形态的误读，统一给自纠正示例，避免"对象能传但悄悄落空"
-          // 这种比"立刻报错"更难排查的隐性失败。
-          if (mistakeHit || keys.length > 0) {
-            throw new Error(SHAPE_HINT)
-          }
-          throw new Error(`newInfo 收到空对象 ${JSON.stringify(obj)}：` + SHAPE_HINT)
-        } else {
-          throw new Error(`newInfo 必须是字符串数组，实际收到 ${typeof args.newInfo}。` + SHAPE_HINT)
-        }
+      // 实机 2026-09-03：模型反复把"全套平级顶层字段"塞进
+      // newInfo / characterChanges / events / newForeshadows 等任一字符串数组字段里。
+      // schema 放宽 + 通用 validateShape 后，所有 string-array 字段共享同一守卫。
+      validateShape('characterChanges', args.characterChanges)
+      validateShape('events', args.events)
+      validateShape('newInfo', args.newInfo)
+      validateShape('newForeshadows', args.newForeshadows)
+      // validateShape 已 throw 拒错形态——能到这里说明这 4 个字段都是 string[] | undefined。
+      // DSH 对 schema oneOf 推出的 args 类型是 wide union，与 updateChapterSummary
+      // 的 ChapterSummaryInput(string[] 形态) 不直接 assignable。call-site 的单 cast
+      // 是这种 union→窄化的最简路径；要回归测试覆盖 all 4 fields 的"对象形态被 throw"。
+      // DSH 对 oneOf 的 args 类型推 wide union 与 ChapterSummaryInput(string[]) 不直接
+      // assignable，用 call-site cast 而非重写 schema 类型。
+      // pick 出仅 7 个章节摘要字段（filter undefined），与原本的透传行为一致。
+      // DSH 对 oneOf 推出 wide union，加 `as ChapterSummaryInput` 窄化。
+      const summary: ChapterSummaryInput = {
+        ...(args.scene !== undefined ? { scene: args.scene } : {}),
+        ...(Array.isArray(args.events) ? { events: args.events } : {}),
+        ...(Array.isArray(args.characterChanges) ? { characterChanges: args.characterChanges } : {}),
+        ...(Array.isArray(args.newInfo) ? { newInfo: args.newInfo } : {}),
+        ...(Array.isArray(args.newForeshadows) ? { newForeshadows: args.newForeshadows } : {}),
+        ...(args.endState !== undefined ? { endState: args.endState } : {}),
+        ...(args.freeform !== undefined ? { freeform: args.freeform } : {}),
       }
       const r = await updateChapterSummary(
         resolveWorkToken(args),
         args.chapterNo,
-        {
-          ...args.scene === undefined ? {} : { scene: args.scene },
-          ...args.events === undefined ? {} : { events: args.events },
-          ...args.characterChanges === undefined ? {} : { characterChanges: args.characterChanges },
-          ...args.newInfo === undefined ? {} : { newInfo: args.newInfo },
-          ...args.newForeshadows === undefined ? {} : { newForeshadows: args.newForeshadows },
-          ...args.endState === undefined ? {} : { endState: args.endState },
-          ...args.freeform === undefined ? {} : { freeform: args.freeform },
-        },
+        summary,
         exec.signal,
       )
       return { chapterNo: args.chapterNo, ...r }

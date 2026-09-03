@@ -214,4 +214,96 @@ describe('novel_update_summary 参数形态', () => {
     ).rejects.toThrow(/newInfo/)
     expect(updateCalls).toHaveLength(0)
   })
+
+  // ===== characterChanges / events / newForeshadows 实机 2026-09-03 第 11 章同型 =====
+
+  it('【实机 2026-09-03 第 11 章】characterChanges 嵌套同类对象 → validateShape 拒并指字段名', async () => {
+    const tool = collectTools().get(TOOL)!
+    // 这是模型在第 11 章传过来的形态：把全套平级顶层字段塞进 characterChanges 对象里，
+    // 还嵌套了一层 `characterChanges: {...}`。
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 11,
+          scene: '西市杂号柜坊门口、账房。',
+          events: ['裴三错清晨回柜坊', '掌柜甩袖带飞蛾'],
+          characterChanges: {
+            item: '卫掌柜:面色铁青是真怕',
+            characterChanges: {
+              newInfo: ['西市柜坊的「未结账」栏'],
+              newForeshadows: ['掌柜「笔尖朝着门口」'],
+              endState: '门口青布小轿绯色袍角动了一下',
+              freeform: '本章把「挂单」从口头规矩推到实质',
+            },
+          } as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) {
+      caught = e as Error
+    }
+    expect(caught).not.toBeNull()
+    // 错误必须点 characterChanges（让模型精确定位错的字段）
+    expect(caught!.message).toMatch(/characterChanges/)
+    // 自纠正提示必须含可复制的正确结构
+    expect(caught!.message).toMatch(/顶层/)
+    // updateChapterSummary 绝不能被调——落库前拦下
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('events 误传对象 → validateShape 拒并指 events', async () => {
+    const tool = collectTools().get(TOOL)!
+    await expect(
+      tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 11,
+          events: { item: 'x', newInfo: [], endState: '', freeform: '' } as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow(/events/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('newForeshadows 误传对象 → validateShape 拒并指 newForeshadows', async () => {
+    const tool = collectTools().get(TOOL)!
+    await expect(
+      tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 11,
+          events: ['e'],
+          newForeshadows: { item: 'x', freeform: '', endState: '' } as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow(/newForeshadows/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('正常字符串数组透传（characterChanges/events/newForeshadows 都正确）', async () => {
+    const tool = collectTools().get(TOOL)!
+    await tool.execute(
+      {
+        workToken: 't',
+        chapterNo: 11,
+        scene: '西市杂号柜坊门口、账房。',
+        events: ['裴三错清晨回柜坊', '掌柜甩袖带飞蛾'],
+        characterChanges: ['卫掌柜:面色铁青是真怕', '裴三错:挂单于「未结账」栏'],
+        newInfo: ['西市柜坊的「未结账」栏'],
+        newForeshadows: ['万俟休提前两天'],
+        endState: '门口青布小轿绯色袍角动了一下',
+        freeform: '本章把「挂单」从口头推到实质',
+      },
+      { signal: new AbortController().signal },
+    )
+    expect(updateCalls).toHaveLength(1)
+    const p = updateCalls[0]?.payload as Record<string, unknown>
+    expect(Array.isArray(p.characterChanges)).toBe(true)
+    expect(Array.isArray(p.events)).toBe(true)
+    expect(Array.isArray(p.newForeshadows)).toBe(true)
+  })
 })
