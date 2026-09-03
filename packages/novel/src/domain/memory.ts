@@ -230,7 +230,7 @@ export async function recordCharacterState(
 
   const recordId = await createRecordWithLinks(
     baseToken, TABLE.CHARACTER_STATE, scalarFields, linkFields, signal,
-    (msg) => { warnings.push(msg) },
+    (event) => { if (event.level === 'warn') warnings.push(event.message) },
   )
   return { recordId, warnings }
 }
@@ -298,7 +298,7 @@ export async function recordEvent(
 
   const recordId = await createRecordWithLinks(
     baseToken, TABLE.EVENT, scalarFields, linkFields, signal,
-    (msg) => { warnings.push(msg) },
+    (event) => { if (event.level === 'warn') warnings.push(event.message) },
   )
   return {
     recordId,

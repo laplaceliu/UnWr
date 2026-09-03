@@ -20,6 +20,25 @@
 import { base } from '@unwr/feishu'
 
 /**
+ * 自愈事件。
+ *
+ * 通知调用方 selfheal 内部发生了一次退避/修复。
+ * - level='info'：还在退避重试中，最终可能自愈。调用方默认降级到 debug 日志。
+ * - level='warn'：已重试到末次仍 missing，下一步会抛错。
+ *   调用方应作为最终预警透出（终端警告 / 工具返回值 warnings）。
+ *
+ * 设计动机（2026-09-03）：原来所有 onHeal 一律 console.warn，18 行
+ * 「退避重试 1/3」铺满终端，纯属噪音——4 次退避循环里 attempt<4 的
+ * 失败大概率是平台 link 列收敛延迟（实测 attempt=2 即过），无需预警。
+ * 但 attempt=4 仍 missing 是真失败（memory 13539341 同型），必须显式
+ * 抛错给 DSH。所以区分 level，让调用方按需路由。
+ */
+export interface HealEvent {
+  level: 'info' | 'warn'
+  message: string
+}
+
+/**
  * 为本次写入涉及的 select 字段补齐缺失选项（幂等：已存在的选项跳过）。
  * 返回「字段: 补充的选项」描述列表；无可补选项时返回空数组。
  *
@@ -86,7 +105,7 @@ export async function createRecordsWithSelfHeal(
   table: string,
   records: readonly Record<string, unknown>[],
   signal: AbortSignal | undefined,
-  onHeal: (message: string) => void,
+  onHeal: (event: HealEvent) => void,
 ): Promise<string[]> {
   const { FeishuError, hintFor } = await import('@unwr/feishu')
   for (let attempt = 1; attempt <= 4; attempt++) {
@@ -99,7 +118,7 @@ export async function createRecordsWithSelfHeal(
       if (e.code === 800030005 && attempt < 4) {
         const healed = await ensureSelectOptions(baseToken, table, records, signal)
           .catch(() => [] as string[])
-        onHeal(`写入 ${table} 遇 800030005：已为 select 字段强制合并选项（${healed.join('、') || '无候选'}），重试 ${attempt}/3`)
+        onHeal({ level: 'info', message: `写入 ${table} 遇 800030005：已为 select 字段强制合并选项（${healed.join('、') || '无候选'}），重试 ${attempt}/3` })
         continue // 立即重试，不退避——选项刚提交，没有收敛等待
       }
       // 800030201 = 字段不属于该表；1254045/not_found = 新库收敛期的资源不可见。
@@ -115,7 +134,7 @@ export async function createRecordsWithSelfHeal(
           { cause: e },
         )
       }
-      onHeal(`写入 ${table} 遇 ${e.code ?? e.kind}（新库收敛中），退避重试 ${attempt}/3……`)
+      onHeal({ level: 'info', message: `写入 ${table} 遇 ${e.code ?? e.kind}（新库收敛中），退避重试 ${attempt}/3……` })
       await new Promise((r) => setTimeout(r, attempt * 3000))
       if (attempt === 2) {
         const { initWork } = await import('./bootstrap.ts')
@@ -198,7 +217,7 @@ export async function updateRecordsWithSelfHeal(
   table: string,
   updates: Readonly<Record<string, Record<string, unknown>>>,
   signal: AbortSignal | undefined,
-  onHeal?: (message: string) => void,
+  onHeal?: (event: HealEvent) => void,
 ): Promise<void> {
   const { FeishuError, hintFor } = await import('@unwr/feishu')
   for (let attempt = 1; attempt <= 4; attempt++) {
@@ -211,7 +230,7 @@ export async function updateRecordsWithSelfHeal(
         const rows = Object.values(updates)
         const healed = await ensureSelectOptions(baseToken, table, rows, signal)
           .catch(() => [] as string[])
-        onHeal?.(`更新 ${table} 遇 800030005：已强制合并 select 选项（${healed.join('、') || '无候选'}），重试 ${attempt}/3`)
+        onHeal?.({ level: 'info', message: `更新 ${table} 遇 800030005：已强制合并 select 选项（${healed.join('、') || '无候选'}），重试 ${attempt}/3` })
         continue
       }
       const healable = e.code === 800030201 || e.kind === 'not_found'
@@ -223,7 +242,7 @@ export async function updateRecordsWithSelfHeal(
           { cause: e },
         )
       }
-      onHeal?.(`${table} 更新遇 ${e.code ?? e.kind}（收敛中），重试 ${attempt}/3……`)
+      onHeal?.({ level: 'info', message: `${table} 更新遇 ${e.code ?? e.kind}（收敛中），重试 ${attempt}/3……` })
       await new Promise((r) => setTimeout(r, attempt * 3000))
       if (attempt === 2) {
         const { initWork } = await import('./bootstrap.ts')
@@ -236,6 +255,11 @@ export async function updateRecordsWithSelfHeal(
       .catch(() => ['(验证读取失败)'])
     if (missing.length === 0) return
     if (attempt === 4) {
+      // 末次仍 missing：抛错（fail-fast），不重复 warn——错误本身就是最强的预警
+      onHeal?.({
+        level: 'warn',
+        message: `${table} link 回填未生效（已重试 3 次）：${missing.join('、')}`,
+      })
       throw new Error(
         `${table} link 回填未生效（已重试 3 次）：${missing.join('、')}。`
         + '可能是写入确实被平台丢弃；也可能是该表存在历史遗留的重名字段'
@@ -243,7 +267,7 @@ export async function updateRecordsWithSelfHeal(
         + '请先用 novel_manage_* 的 query 核对目标记录后再决定是否重写。',
       )
     }
-    onHeal?.(`${table} link 回填未落库（${missing.join('、')}），退避重试 ${attempt}/3……`)
+    onHeal?.({ level: 'info', message: `${table} link 回填未落库（${missing.join('、')}），退避重试 ${attempt}/3……` })
     await new Promise((r) => setTimeout(r, attempt * 3000))
     if (attempt === 2) {
       const { initWork } = await import('./bootstrap.ts')
@@ -272,7 +296,7 @@ export async function createRecordWithLinks(
   scalarFields: Record<string, unknown>,
   linkFields: Record<string, string[]>,
   signal: AbortSignal | undefined,
-  onHeal: (message: string) => void,
+  onHeal: (event: HealEvent) => void,
 ): Promise<string> {
   const ids = await createRecordsWithSelfHeal(baseToken, table, [scalarFields], signal, onHeal)
   const recordId = ids[0]

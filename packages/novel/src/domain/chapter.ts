@@ -301,7 +301,7 @@ async function fillChapterShell(
 
   await updateRecordsWithSelfHeal(
     baseToken, TABLE.CHAPTER, { [recordId]: fields }, signal,
-    (msg) => { warnings.push(msg) },
+    (event) => { if (event.level === 'warn') warnings.push(event.message) },
   )
 
   // 5. 「所属卷」link：用户显式提供 volume 且卷记录可用则回填；否则不动原值
@@ -318,7 +318,7 @@ async function fillChapterShell(
           baseToken, TABLE.CHAPTER,
           { [recordId]: { [CHAPTER_F.VOLUME]: [{ id: volumeRecordId }] } },
           signal,
-          (msg) => { warnings.push(msg) },
+          (event) => { if (event.level === 'warn') warnings.push(event.message) },
         )
       } else {
         warnings.push(`「${params.volume}」的卷记录迟迟不可见，「所属卷」未关联。`)
@@ -439,7 +439,11 @@ export async function writeChapter(
   // initWork 幂等补齐缺失字段后重试，让用户无感。
   const recordIds = await createRecordsWithSelfHeal(
     baseToken, TABLE.CHAPTER, [fields], signal,
-    (msg) => { warnings.push(msg) },
+    (event) => {
+      // 按 level 路由：info 不再透出到 warnings（避免 writeChapter 用户
+      // 看到"link 回填退避"伪警报）；warn 是末次失败真预警，仍透出。
+      if (event.level === 'warn') warnings.push(event.message)
+    },
   )
   const recordId = recordIds[0]
   if (recordId === undefined) {
@@ -621,7 +625,7 @@ export async function recordChapterCast(
       baseToken, TABLE.CHAPTER,
       { [chapterRecordId]: { [CHAPTER_F.CAST]: mergedCast.map((id) => ({ id })) } },
       signal,
-      (msg) => { warnings.push(msg) },
+      (event) => { if (event.level === 'warn') warnings.push(event.message) },
     )
   }
 
@@ -642,7 +646,7 @@ export async function recordChapterCast(
   if (Object.keys(personPatch).length > 0) {
     await updateRecordsWithSelfHeal(
       baseToken, TABLE.CHARACTER, personPatch, signal,
-      (msg) => { warnings.push(msg) },
+      (event) => { if (event.level === 'warn') warnings.push(event.message) },
     )
   }
   return warnings

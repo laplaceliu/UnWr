@@ -124,8 +124,8 @@ async function upsert(
       for (const [field, ids] of Object.entries(links)) {
         if (ids.length > 0) patch[field] = ids.map((id) => ({ id }))
       }
-      await updateRecordsWithSelfHeal(baseToken, table, { [existing]: patch }, signal, (msg) => {
-        warnings.push(msg)
+      await updateRecordsWithSelfHeal(baseToken, table, { [existing]: patch }, signal, (event) => {
+        if (event.level === 'warn') warnings.push(event.message)
       })
     } else {
       await base.updateRecords(baseToken, table, { [existing]: fields }, signal)
@@ -135,7 +135,7 @@ async function upsert(
 
   const recordId = await createRecordWithLinks(
     baseToken, table, fields, links, signal,
-    (msg) => { warnings.push(msg) },
+    (event) => { if (event.level === 'warn') warnings.push(event.message) },
   )
 
   // 飞书 Base 有约 1 秒写入索引延迟：不等可见就返回的话，
@@ -356,7 +356,21 @@ export async function setChapterOutline(
   const newRecordId = await createRecordWithLinks(
     baseToken, TABLE.CHAPTER, scalarFields,
     volumeId === undefined ? {} : { [CHAPTER_F.VOLUME]: [volumeId] },
-    signal, (msg) => { warnings.push(msg) },
+    signal, (event) => {
+      // selfheal 修复（2026-09-03）：按 level 路由——
+      // info = 还在退避重试中（attempt<4），大概率是平台 link 列收敛
+      //   延迟（实测 attempt=2/3s 退避即可过），不打 console.warn 刷屏；
+      // warn = 末次重试仍 missing，下一步会抛错——透出作为最终预警。
+      if (event.level === 'warn') {
+        warnings.push(event.message)
+        console.warn(`[setChapterOutline] 第 ${chapterNo} 章:`, event.message)
+      } else {
+        // debug-only：调用方需要排查平台行为时可显式开启
+        if (process.env['UNWR_DEBUG_SELFHEAL'] === '1') {
+          console.log(`[setChapterOutline] 第 ${chapterNo} 章:`, event.message)
+        }
+      }
+    },
   )
   if (warnings.length > 0) {
     console.warn(`[setChapterOutline] 第 ${chapterNo} 章自动建章警告:`, warnings.join('；'))
@@ -387,6 +401,29 @@ async function ensureVolumeRecord(
   )
   const id = ids[0]
   if (id === undefined) throw new Error(`卷「${volumeName}」创建失败：未返回 record_id`)
+  // 等卷记录在 listRecords 可查询命中后再返回——
+  // setChapterOutline 创建章节后立即用此 id 写 link，回填 link
+  // 的目标若还不可见，飞书 link 列虽返回 ok:true 但**实际不落库**
+  // （memory 52080412 第③条：刚创建的记录回填 link 可能被服务端
+  // 静默丢弃）。等到 listRecords 能命中=平台侧完全就绪，再交给
+  // 调用方去做 link 写入，绝大多数情况下 attempt=1 即可落库。
+  await awaitVisible(
+    async () => {
+      const r = base.matrixToObjects(
+        await base.listRecords(baseToken, TABLE.VOLUME, {
+          fieldIds: [VOLUME_F.NAME],
+          filter: { logic: 'and', conditions: [[VOLUME_F.NAME, '==', volumeName]] },
+          limit: 1,
+        }, signal),
+      )
+      return r[0]?.['__recordId'] === id
+    },
+    signal,
+    () => {}, // 兜底超时：调用方拿到 id 后由 selfheal 的 verifyLinkBackfill
+              // 兜底，attempt=2/3s 退避可救回。**不抛错、不 console.warn**，
+              // 避免在 E 修复前再次刷出"卷记录迟迟不可见"的伪警报。
+    /* timeoutMs */ 3000,
+  )
   return id
 }
 
@@ -1088,8 +1125,8 @@ export async function upsertRelation(
     }
     // 含 link 字段（A/B/START_CHAPTER）→ 必须走自愈版：新库 link 字段
     // 收敛期会报 800030201（实机 2026-09-02：裸调用在反向 upsert 时炸）
-    await updateRecordsWithSelfHeal(baseToken, TABLE.RELATION, { [existing]: patch }, signal, (msg: string) => {
-      warnings.push(msg)
+    await updateRecordsWithSelfHeal(baseToken, TABLE.RELATION, { [existing]: patch }, signal, (event) => {
+      if (event.level === 'warn') warnings.push(event.message)
     })
     relationCacheSet(cacheKey, existing)
     return { recordId: existing, updated: true, warnings: [...preservedWarning, ...warnings] }
@@ -1097,7 +1134,7 @@ export async function upsertRelation(
 
   const recordId = await createRecordWithLinks(
     baseToken, TABLE.RELATION, scalarFields, linkFields, signal,
-    (msg) => { warnings.push(msg) },
+    (event) => { if (event.level === 'warn') warnings.push(event.message) },
   )
   relationCacheSet(cacheKey, recordId)
 
