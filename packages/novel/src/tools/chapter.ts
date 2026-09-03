@@ -106,8 +106,14 @@ function registerWriteChapter(ctx: Context): void {
       )
       return {
         ...result,
-        nextHint: '草稿已落库。建议接着调用 novel_update_summary 沉淀本章摘要，'
-          + '否则后续章节起草时无法回忆起本章内容。',
+        nextHint: '草稿已落库。收尾沉淀清单（漏一项，后续章节就会失忆或人物对不上，'
+          + '全部做完才算写完本章）：'
+          + '① novel_update_summary 写本章结构化摘要；'
+          + '② 为每个出场人物调 novel_record_character_state 记章末状态；'
+          + '③ 新人物建档：cast 中未解析的名字、本章首次登场而人物表查无者，先 query 查重再 '
+          + 'novel_manage_character(action=upsert)；'
+          + '④ 新关系或关系转变 → novel_manage_relation(action=upsert, characterA/characterB/type)；'
+          + '⑤ 关键事件 novel_record_event 登记。',
       }
     },
   }))

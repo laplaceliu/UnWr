@@ -42,7 +42,7 @@ const READ_ONLY_TOOLS = new Set([
   'novel_calculate',
 ])
 
-/** 起草官必须携带的记忆沉淀三件套（G1/G2/G3 的落库能力）。 */
+/** 起草官必须携带的记忆沉淀套件（G1/G2/G3 + 人物/关系落库能力）。 */
 const DRAFTER_REQUIRED = [
   'novel_build_context',
   'novel_write_chapter',
@@ -56,6 +56,10 @@ const DRAFTER_REQUIRED = [
   // 算术规则（WRITING_CONVENTIONS 第 14 条）：写正文涉及「共/合计/总计/差值」
   // 必调。实机 2026-09-03：drafter filter 里没有就只能自算，必错。
   'novel_calculate',
+  // 写作中触发人物侧沉淀（实机 2026-09-03：人物表/关系表只在用户追问后才
+  // 更新）。没有这两个工具，起草官写作时引入的新人物/新关系根本无工具可落库。
+  'novel_manage_character',
+  'novel_manage_relation',
 ]
 
 /** 改稿官必携带算术修正工具（算术 bug 闭环修复前提）。 */
@@ -211,7 +215,7 @@ describe('cordis.patch.yml ↔ 插件注册表', () => {
     }
   })
 
-  it('起草官白名单含记忆沉淀三件套（G1/G2/G3 落库能力）', () => {
+  it('起草官白名单含记忆沉淀套件（摘要/状态/事件/新人物/关系）', () => {
     const drafter = agentBlocks.find((b) => b.id === 'unwr-agent-drafter')
     expect(drafter?.allow ?? []).toEqual(expect.arrayContaining(DRAFTER_REQUIRED))
   })
