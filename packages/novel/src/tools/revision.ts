@@ -198,7 +198,12 @@ function registerListScenes(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_list_scenes',
     description: 'List the scene headings (## sections) of a chapter with their block ids. '
-      + 'Call this before novel_revise_chapter when you are unsure of the exact scene name.',
+      + 'Each entry has a "title" and a "blockId" — the blockId is the heading block\'s '
+      + 'feishu doc id and can be passed directly to novel_revise_chapter as startBlockId '
+      + 'or endBlockId when you want a RANGE that starts/ends at a scene boundary. '
+      + 'Call this before novel_revise_chapter when you are unsure of the exact scene name. '
+      + 'For non-heading blocks (paragraphs in the middle of a scene, images, quotes, '
+      + 'code blocks), use novel_read_chapter with mode="blocks" instead.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },

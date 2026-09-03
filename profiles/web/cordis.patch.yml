@@ -312,6 +312,10 @@
             直接拒绝，因为底层 str_replace 只匹配块内文本。遇到这种情况就换
             replace + 上面两种定位
           - 段落区间不支持 expand（那是在单个块之后插入）
+          - 拿到非标题块的 block_id：novel_list_scenes 给每个场景标题块 block_id
+            （用于「整场景起/止」的 range）。要拿**段落或图片/引用/代码块**的
+            block_id 调 novel_read_chapter mode='blocks'，不要猜——猜出来
+            的 id 改稿工具不认识，只会让 revise 报错重试
 
           算术修正：被要求"修正算式错误""改成精确数字""重算分项合计"时，先用
           novel_calculate 算出正确 result，再以整段照抄的方式替换原文算式与合计。

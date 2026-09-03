@@ -105,6 +105,37 @@ export class LocateError extends Error {
   }
 }
 
+/** 单个块预览（来自 doc detail=with-ids 的 XML）。 */
+export interface ChapterBlockPreview {
+  /** 块在当前场景内的连续序号（heading 块为 0；段落从 1 开始；中间非段落也占号） */
+  index: number
+  /** 飞书 block id（doxcn 开头） */
+  blockId: string
+  /** 块类型——paragraph/heading/quote/code/image/list/divider/table 等 */
+  type: string
+  /** 文本预览（去内嵌标签，按需截断，不超过 80 个汉字字符） */
+  preview: string
+}
+
+/** 一个场景的块清单（含标题块本身 + 各段落/中间块）。 */
+export interface ChapterBlocksScene {
+  title: string
+  /** 场景标题块的 block_id（用于 range 改稿的端点） */
+  blockId: string
+  /** 段落/中间块列表（不含场景标题） */
+  blocks: ChapterBlockPreview[]
+  /** 仅 paragraphs 的 1-based 序号（与 blocks 同一个 doc，是 blocks 里 type==='paragraph' 的过滤视图） */
+  paragraphs: { index: number; blockId: string; preview: string }[]
+}
+
+/** 全章块结构（用于 novel_read_chapter mode='blocks'）。 */
+export interface ChapterBlocks {
+  docToken: string
+  scenes: ChapterBlocksScene[]
+  /** 整章顶层块计数（含所有 heading） */
+  totalBlocks: number
+}
+
 /** 从章节表取正文文档 token。 */
 export async function resolveChapterDoc(
   baseToken: string,
@@ -284,6 +315,131 @@ async function currentWords(
 ): Promise<number> {
   const doc = await docs.fetchDoc(docToken, { docFormat: 'markdown' }, signal)
   return countWords(doc.content)
+}
+
+/**
+ * 列出一章的所有顶层块（heading + paragraph + image + quote + ...）。
+ *
+ * 与 `listScenes`（只回场景标题）不同，这里把每个场景下的所有块（包括段落、图片、
+ * 引用、列表）按出现顺序展开，每条带 blockId + type + 文本预览。模型拿到这个
+ * 就能挑：
+ *   • scene + paragraph → structure location（稳定，不依赖文本）
+ *   • blockId → 精确单块（用于 expand/delete/range 端点）
+ *   • scene 标题的 blockId → 整个场景的 range 起点（粗范围）
+ *   • 段落级 blockId → 段落级 range 端点（细范围）
+ *
+ * 解析规则（与 `getSceneParagraphs` 同源，避免两处正则漂移）：
+ *   1. 一次 `fetchDoc({ detail: 'with-ids', docFormat: 'xml' })` 拿到带 id 的 XML；
+ *   2. 任何带 id="doxcn..." 的块顶层节点（heading1~6 / p / quote / code / image /
+ *      bullet / ordered / divider / table 等）按出现顺序编入当前场景；
+ *   3. 文本抽取：取所有 <text>...</text> 节点，strip 嵌套标签；
+ *   4. 预览截断到 80 个汉字字符（CJK 按 1 字符计，code/quote 不截断）；
+ *   5. 跳过空段落（与 `getSceneParagraphs` 一致）。
+ *
+ * 注意：飞书 wrap XML 形态随版本可能变化（顶层 wrapper / tag 命名都见过差异），
+ * 故解析**只**依赖 `<... id="doxcn...">...</...>` 这一不变量，不依赖具体 tag 集。
+ */
+export async function listChapterBlocks(
+  docToken: string,
+  signal?: AbortSignal,
+): Promise<ChapterBlocks> {
+  const doc = await docs.fetchDoc(
+    docToken,
+    { detail: 'with-ids', docFormat: 'xml' },
+    signal,
+  )
+  const xml = doc.content
+
+  // 顶层块匹配：任何带 id="doxcn..." 的元素。单标签（如 <hr/>）不匹配，但 divider
+  // 在飞书侧一般是双标签 <block type="divider"></block>，含 id 时也能命中。
+  // tag 名 ([a-z][a-z0-9_-]*) 允许 heading1~6 / p / block / quote / code / image /
+  // table / bullet / ordered 等；</...> 同 tag 名闭合，保持开始结束配对。
+  const blockRe = /<([a-z][a-z0-9_-]*)[^>]*\bid="(doxcn[^"]+)"[^>]*>([\s\S]*?)<\/\1>/g
+  // 文本节点：内嵌 <text> 多个，扁平按顺序拼。
+  const textRe = /<text[^>]*>([\s\S]*?)<\/text>/g
+  const strip = (s: string): string => s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+  const preview = (s: string): string => {
+    const t = strip(s)
+    // 简单 CJK 字符长度限制。展示用，不必精确——目的只是给模型看一段上下文。
+    if (t.length <= 80) return t
+    return t.slice(0, 80) + '…'
+  }
+
+  // 收集所有带 block id 的顶层块：sceneHeading 优先按 heading 层级识别。
+  // 「顶层块」= 不在另一个 match 内部的块——考虑到飞书 XML 极少嵌套同名顶级
+  // 块（heading/paragraph 不会套娃），贪心匹配逐个捕捉已是顶层。
+  const all: { tag: string; id: string; inner: string }[] = []
+  let bm: RegExpExecArray | null
+  while ((bm = blockRe.exec(xml)) !== null) {
+    all.push({ tag: bm[1] ?? '', id: bm[2] ?? '', inner: bm[3] ?? '' })
+  }
+
+  // 顺序构建场景 —— 任意 heading 层级都开新场景（与 listScenes 同语义：
+  // 整章从 h1 开始；h2 是常用的 ## 场景标题）。
+  const scenes: ChapterBlocksScene[] = []
+  let cur: { title: string; blockId: string; blocks: ChapterBlockPreview[] } | null = null
+  let paragraphIdxInScene = 0
+  let totalBlocks = 0
+
+  for (const blk of all) {
+    const isHeading = /^h[1-6]$/.test(blk.tag)
+    if (isHeading) {
+      // 关闭上一个场景
+      if (cur !== null) {
+        scenes.push({
+          title: cur.title,
+          blockId: cur.blockId,
+          blocks: cur.blocks,
+          paragraphs: cur.blocks
+            .filter((b) => b.type === 'paragraph')
+            .map((b) => ({ index: b.index, blockId: b.blockId, preview: b.preview })),
+        })
+      }
+      // 开新场景
+      paragraphIdxInScene = 0
+      cur = {
+        title: strip(blk.inner) || '(无标题)',
+        blockId: blk.id,
+        blocks: [],
+      }
+      totalBlocks += 1
+      continue
+    }
+    if (cur === null) {
+      // 文档开头在第一个 heading 之前的块：归到「(无标题)」合成场景
+      cur = { title: '(章首)', blockId: '', blocks: [] }
+    }
+    const text = preview(blk.inner)
+    // 块 type 归一化：飞书 XML 里 paragraph 写作 <p>，image/quote/code/divider
+    // 用各自的 tag。把 'p' 映射成 'paragraph' 让 type 字段对调用方稳定可筛。
+    const type = blk.tag === 'p' ? 'paragraph' : blk.tag
+    if (text === '' && /^(paragraph|h[1-6]|heading)$/.test(type)) {
+      // 空 paragraph/heading 与现有 getSceneParagraphs 行为一致丢弃；
+      // 非文本块（image/divider/table/code/list/quote）保留——
+      // 它们本身可作为 range 端点，且占编号后才能与场景内段落计数连续。
+      continue
+    }
+    paragraphIdxInScene += 1
+    cur.blocks.push({
+      index: paragraphIdxInScene,
+      blockId: blk.id,
+      type,
+      preview: text,
+    })
+    totalBlocks += 1
+  }
+  if (cur !== null) {
+    scenes.push({
+      title: cur.title,
+      blockId: cur.blockId,
+      blocks: cur.blocks,
+      paragraphs: cur.blocks
+        .filter((b) => b.type === 'paragraph')
+        .map((b) => ({ index: b.index, blockId: b.blockId, preview: b.preview })),
+    })
+  }
+
+  return { docToken, scenes, totalBlocks }
 }
 
 /**

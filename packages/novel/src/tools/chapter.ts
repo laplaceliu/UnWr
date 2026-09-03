@@ -19,6 +19,7 @@ import {
 } from '../domain/chapter.ts'
 import { extractDocToken } from '../context/builder.ts'
 import { resolveWorkToken } from './defaults.ts'
+import { listChapterBlocks } from '../domain/revision.ts'
 
 /** 注册章节相关工具。 */
 export function registerChapterTools(ctx: Context): void {
@@ -178,14 +179,20 @@ function registerAppendChapter(ctx: Context): void {
 function registerReadChapter(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_read_chapter',
-    description: 'Read the prose of an existing chapter, or search inside it by keyword, '
-      + 'or list its scene outline. Use it to check what has already been written.',
+    description: 'Read the prose of an existing chapter, or list its scene/paragraph '
+      + 'outline with block ids, or search inside it by keyword. '
+      + 'Use it to check what has already been written, and — when you need precise '
+      + 'block ids for novel_revise_chapter — use mode="outline" or mode="blocks".',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
       mode: {
-        type: 'string', enum: ['full', 'outline', 'search'],
-        description: 'full = whole text; outline = scene headings only; search = find keyword. Defaults to full.',
+        type: 'string', enum: ['full', 'outline', 'blocks', 'search'],
+        description: 'full = whole text; outline = scene headings only (the simpler ' +
+          'probe, also returned by novel_list_scenes); blocks = every block under each ' +
+          'scene with its block_id, type and text preview (paragraphs + images + ' +
+          'quotes + code + lists, in order) — use this when you need a blockId that is ' +
+          'NOT a scene heading; search = find keyword. Defaults to full.',
         default: 'full',
       },
       keyword: { type: 'string', description: 'Required when mode is search. Required (and only valid) when mode=search.' },
@@ -199,6 +206,48 @@ function registerReadChapter(ctx: Context): void {
           mode: { type: 'string', required: true },
           content: { type: 'string', required: true },
           words: { type: 'number', required: true },
+          blocks: {
+            // 仅 mode='blocks' 时填充
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              docToken: { type: 'string', required: true },
+              totalBlocks: { type: 'number', required: true },
+              scenes: {
+                type: 'array', required: true,
+                items: {
+                  type: 'object', additionalProperties: false,
+                  properties: {
+                    title: { type: 'string', required: true },
+                    blockId: { type: 'string', required: true },
+                    blocks: {
+                      type: 'array', required: true,
+                      items: {
+                        type: 'object', additionalProperties: false,
+                        properties: {
+                          index: { type: 'number', required: true },
+                          blockId: { type: 'string', required: true },
+                          type: { type: 'string', required: true },
+                          preview: { type: 'string', required: true },
+                        },
+                      },
+                    },
+                    paragraphs: {
+                      type: 'array', required: true,
+                      items: {
+                        type: 'object', additionalProperties: false,
+                        properties: {
+                          index: { type: 'number', required: true },
+                          blockId: { type: 'string', required: true },
+                          preview: { type: 'string', required: true },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
@@ -219,6 +268,20 @@ function registerReadChapter(ctx: Context): void {
       const mode = args.mode ?? 'full'
       if (mode === 'search' && (args.keyword === undefined || args.keyword === '')) {
         throw new Error('mode=search 时必须提供 keyword。')
+      }
+
+      // mode='blocks' 直走结构化路径——不进 markdown 也不进 outline XML；
+      // 它的输出语义跟 full/outline 完全不同，挂在外层 blocks 字段。
+      if (mode === 'blocks') {
+        const blocks = await listChapterBlocks(token, exec.signal)
+        return {
+          chapterNo: args.chapterNo,
+          title: rows.title,
+          mode,
+          content: '',
+          words: 0,
+          blocks,
+        }
       }
 
       const doc = await docs.fetchDoc(
