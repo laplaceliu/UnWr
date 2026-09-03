@@ -3,8 +3,14 @@
  *
  * 把自己注册到 ctx.webServer：
  *   - 静态资源 3 个文件 → /workbench, /workbench/app.js, /workbench/style.css
- *   - 领域 API → /api/agents, /api/works (GET/POST), /api/outline,
- *                /api/chapter, /api/context, /api/checks, /api/view/:view
+ *   - 领域 API → /workbench/api/agents, /workbench/api/works (GET/POST),
+ *                /workbench/api/outline, /workbench/api/chapter,
+ *                /workbench/api/context, /workbench/api/checks,
+ *                /workbench/api/view/:view
+ *
+ * **API 前缀必须是 /workbench/api**：`/api` 被 dsh-client-connection 保留
+ * （API_PATH 常量，webServer 对重复 prefix 路由直接报
+ * `duplicate prefix route`，实机 2026-09-03）。
  *
  * 资源定位：
  *   - 静态文件相对本文件 URL 解析 → `dist/public/`（build 脚本拷 public/ 到这里）
@@ -84,7 +90,9 @@ function apiDispatcher(publicDir: string) {
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://x')
-    const pathname = url.pathname
+    // 路由按 /workbench/api 挂载（/api 被平台保留）。把前缀归一回
+    // /api 再做内部分支匹配，前后端路径语义保持不变。
+    const pathname = url.pathname.replace(/^\/workbench\/api/, '/api')
     const method = req.method ?? 'GET'
 
     try {
@@ -151,6 +159,18 @@ function apiDispatcher(publicDir: string) {
 
 /* ============================== 插件入口 ============================== */
 
+/**
+ * Cordis 插件名与服务声明。
+ *
+ * **必须声明 inject**：Cordis 对未声明的服务属性访问直接抛
+ * `cannot get property "webServer" without inject`（实机 2026-09-03：
+ * 之前没声明，DSH 一启动就崩，实机副本曾被人手动摘掉 unwr-web 块绕过）。
+ * 声明后 cordis 会等 webServer 就绪再 apply——与官方 host 插件
+ * （dsh-host-directory-picker-auto / dsh-client-modules）同款写法。
+ */
+export const name = 'unwr-web'
+export const inject = ['webServer']
+
 export function apply(_ctx: unknown, _config: unknown): void {
   // 解析 dist/public/：本文件被 esbuild bundle 到 dist/unwr-web.mjs，
   // 所以 import.meta.dirname 在运行时 = dist/。
@@ -169,13 +189,12 @@ export function apply(_ctx: unknown, _config: unknown): void {
       handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
     }): () => void
   }
-  // 借助 ctx 注入取 webServer
-  // cordis 通用注册法：插件被传入 (ctx, config)，ctx.inject('webServer')。
-  const ctx = _ctx as { webServer?: WebServerLike; inject?: <T>(svc: string) => T; get?: <T>(svc: string) => T }
-  const ws: WebServerLike | undefined =
-    ctx.webServer ?? ctx.inject?.('webServer') ?? ctx.get?.('webServer')
+  // inject 声明后 ctx.webServer 必然就绪；这里保留兜底，只在插件被
+  // 脱离 web profile 误用时给出可读错误（而非 cordis 的裸拦截）。
+  const ctx = _ctx as { webServer?: WebServerLike }
+  const ws: WebServerLike | undefined = ctx.webServer
   if (ws === undefined) {
-    throw new Error('unwr-web: DSH 未暴露 webServer（应确认 dsh-host-webserver 已启用）。')
+    throw new Error('unwr-web: webServer 服务不可用（unwr-web 只能在提供 webServer 的 profile 下加载）。')
   }
 
   const dispatch = apiDispatcher(publicDir)
@@ -183,5 +202,5 @@ export function apply(_ctx: unknown, _config: unknown): void {
   ws.register({ kind: 'exact', path: '/workbench',          handler: sendStaticHtml(publicDir, 'index.html') })
   ws.register({ kind: 'exact', path: '/workbench/app.js',   handler: serveStatic(publicDir, 'app.js') })
   ws.register({ kind: 'exact', path: '/workbench/style.css', handler: serveStatic(publicDir, 'style.css') })
-  ws.register({ kind: 'prefix', path: '/api',               handler: dispatch })
+  ws.register({ kind: 'prefix', path: '/workbench/api',     handler: dispatch })
 }

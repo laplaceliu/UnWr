@@ -182,8 +182,8 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_manage_setting` | 设定词条：query / upsert（设定官） |
 | `novel_manage_character` | 人物档案：query / upsert（人物官） |
 | `novel_manage_outline` | 大纲：query / set_chapter_outline / upsert_volume（大纲官） |
-| `novel_manage_foreshadow` | 伏笔：query / upsert，含埋设与回收状态 |
-| `novel_manage_plotline` | 主线/支线剧情线：query / upsert |
+| `novel_manage_foreshadow` | 伏笔：query / upsert，含埋设与回收状态；`plantChapter`/`planPayoffChapter`/`actualPayoffChapter` 关联章节（驱动逾期检查） |
+| `novel_manage_plotline` | 主线/支线剧情线：query / upsert；`chapterNos` 关联覆盖章节（整体替换，驱动起草上下文激活） |
 | `novel_manage_branch` | 卡文救援的候选分支：query / upsert（救援官） |
 | `novel_manage_relation` | 人物关系：query / upsert（含关系图检索） |
 | `novel_advance_character_arc` | 推进人物弧光曲线（魂牵梦绕→觉醒→抉择→牺牲→新生） |

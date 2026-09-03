@@ -243,7 +243,9 @@ function registerForeshadow(ctx: Context): void {
     name: 'novel_manage_foreshadow',
     description: 'Manage foreshadowing / clues: plant new ones, mark them as paid off, or list '
       + 'what is still open. For genre fiction (mystery, thriller) this is the backbone of '
-      + 'a fair puzzle — plant clues early and pay them off within the promised window.',
+      + 'a fair puzzle — plant clues early and pay them off within the promised window. '
+      + 'ALWAYS pass plantChapter when planting and planPayoffChapter (the promised payoff '
+      + 'deadline); without them the overdue-check cannot track this foreshadow.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
@@ -258,6 +260,20 @@ function registerForeshadow(ctx: Context): void {
       },
       importance: { type: 'number', description: 'Importance 1-5 (upsert).' },
       note: { type: 'string', description: 'Note (upsert).' },
+      plantChapter: {
+        type: 'number',
+        description: 'Chapter number where the foreshadow is planted (upsert). '
+          + 'Links the foreshadow to the chapter — REQUIRED workflow-wise for new plants.',
+      },
+      planPayoffChapter: {
+        type: 'number',
+        description: 'Chapter number by which the foreshadow should pay off (upsert). '
+          + 'The overdue check compares the current chapter against this window.',
+      },
+      actualPayoffChapter: {
+        type: 'number',
+        description: 'Chapter number where it actually paid off — set when marking 已回收 (upsert).',
+      },
     },
     output: {
       schema: {
@@ -265,9 +281,10 @@ function registerForeshadow(ctx: Context): void {
         properties: {
           action: { type: 'string', required: true },
           total: { type: 'number', required: true },
-          items: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { content: { type: 'string', required: true }, type: { type: 'string' }, status: { type: 'string' }, importance: { type: 'number' } } } },
+          items: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { content: { type: 'string', required: true }, type: { type: 'string' }, status: { type: 'string' }, importance: { type: 'number' }, plantChapter: { type: 'number' }, planPayoffChapter: { type: 'number' }, actualPayoffChapter: { type: 'number' } } } },
           recordId: { type: 'string' },
           updated: { type: 'boolean' },
+          warnings: { type: 'array', items: { type: 'string' } },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
@@ -288,8 +305,15 @@ function registerForeshadow(ctx: Context): void {
         ...args.status === undefined ? {} : { status: args.status },
         ...args.importance === undefined ? {} : { importance: args.importance },
         ...args.note === undefined ? {} : { note: args.note },
+        ...args.plantChapter === undefined ? {} : { plantChapter: args.plantChapter },
+        ...args.planPayoffChapter === undefined ? {} : { planPayoffChapter: args.planPayoffChapter },
+        ...args.actualPayoffChapter === undefined ? {} : { actualPayoffChapter: args.actualPayoffChapter },
       }, exec.signal)
-      return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated }
+      return {
+        action: 'upsert', total: 1, items: [],
+        recordId: r.recordId, updated: r.updated,
+        ...(r.warnings.length === 0 ? {} : { warnings: r.warnings }),
+      }
     },
   }))
 }
@@ -298,7 +322,9 @@ function registerPlotline(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_manage_plotline',
     description: 'Manage main and sub plotlines: their type, current stage and description. '
-      + 'Useful for tracking whether a subplot has been left hanging.',
+      + 'Useful for tracking whether a subplot has been left hanging. '
+      + 'Pass chapterNos so the drafting context can activate the plotline '
+      + 'when drafting those chapters — without it the line never triggers.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: { type: 'string', enum: ['query', 'upsert'], required: true },
@@ -309,6 +335,12 @@ function registerPlotline(ctx: Context): void {
         description: 'Stage (upsert).',
       },
       description: { type: 'string', description: 'Description (upsert).' },
+      chapterNos: {
+        type: 'array', items: { type: 'number' },
+        description: 'Chapter numbers this plotline spans (upsert). REPLACE semantics: '
+          + 'pass the FULL list every time. Chapters that do not exist yet are skipped '
+          + 'with a warning.',
+      },
     },
     output: {
       schema: {
@@ -316,9 +348,10 @@ function registerPlotline(ctx: Context): void {
         properties: {
           action: { type: 'string', required: true },
           total: { type: 'number', required: true },
-          items: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, type: { type: 'string' }, status: { type: 'string' }, description: { type: 'string' } } } },
+          items: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, type: { type: 'string' }, status: { type: 'string' }, description: { type: 'string' }, chapters: { type: 'array', items: { type: 'number' } } } } },
           recordId: { type: 'string' },
           updated: { type: 'boolean' },
+          warnings: { type: 'array', items: { type: 'string' } },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
@@ -338,8 +371,13 @@ function registerPlotline(ctx: Context): void {
         ...args.type === undefined ? {} : { type: args.type },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.description === undefined ? {} : { description: args.description },
+        ...args.chapterNos === undefined ? {} : { chapterNos: args.chapterNos },
       }, exec.signal)
-      return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated }
+      return {
+        action: 'upsert', total: 1, items: [],
+        recordId: r.recordId, updated: r.updated,
+        ...(r.warnings.length === 0 ? {} : { warnings: r.warnings }),
+      }
     },
   }))
 }

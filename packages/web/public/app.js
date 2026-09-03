@@ -15,7 +15,8 @@ const esc = (s) => String(s ?? '')
 const fmtN = (n) => Number(n || 0).toLocaleString('zh-CN')
 
 async function api(path, opts = {}) {
-  const res = await fetch('/api' + path, {
+  // /api 被 dsh-client-connection 保留，工作台 API 统一挂在 /workbench/api 下
+  const res = await fetch('/workbench/api' + path, {
     method: opts.method ?? 'GET',
     ...(opts.body !== undefined ? {
       headers: { 'content-type': 'application/json' },

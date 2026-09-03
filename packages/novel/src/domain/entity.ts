@@ -107,22 +107,36 @@ async function upsert(
   keyValue: string,
   fields: Fields,
   signal?: AbortSignal,
+  /** 关联字段（字段名 → 目标 recordId）。两阶段写入：先建标量再回填 link。 */
+  links: Record<string, string[]> = {},
 ): Promise<UpsertResult> {
   const warnings: string[] = []
   const existing = await findBy(baseToken, table, keyField, keyValue, signal)
 
+  // link 回填必须走 selfheal 版 update：它按 record-get 验证回填是否落库
+  // （2026-09-03 实机事故：裸 update 在重名列/收敛窗口下静默失败，无验证
+  // 就发现不了）。无 link 时保持裸 update——少一次验证读取。
+  const hasLinks = Object.values(links).some((ids) => ids.length > 0)
+
   if (existing !== undefined) {
-    await base.updateRecords(baseToken, table, { [existing]: fields }, signal)
+    if (hasLinks) {
+      const patch: Fields = { ...fields }
+      for (const [field, ids] of Object.entries(links)) {
+        if (ids.length > 0) patch[field] = ids.map((id) => ({ id }))
+      }
+      await updateRecordsWithSelfHeal(baseToken, table, { [existing]: patch }, signal, (msg) => {
+        warnings.push(msg)
+      })
+    } else {
+      await base.updateRecords(baseToken, table, { [existing]: fields }, signal)
+    }
     return { recordId: existing, updated: true, warnings }
   }
 
-  const ids = await createRecordsWithSelfHeal(baseToken, table, [fields], signal, (msg) => {
-    warnings.push(msg)
-  })
-  const recordId = ids[0]
-  if (recordId === undefined) {
-    throw new Error(`${table} 记录创建失败：未返回 record_id`)
-  }
+  const recordId = await createRecordWithLinks(
+    baseToken, table, fields, links, signal,
+    (msg) => { warnings.push(msg) },
+  )
 
   // 飞书 Base 有约 1 秒写入索引延迟：不等可见就返回的话，
   // 调用方紧接着的第二次 upsert 会查不到这条记录而重复创建。
@@ -522,6 +536,12 @@ export interface ForeshadowInput {
   status?: string
   importance?: number
   note?: string
+  /** 埋设章节号；章节还不存在时告警并跳过关联 */
+  plantChapter?: number
+  /** 计划回收章节号（回收窗口的截止点，供逾期检查） */
+  planPayoffChapter?: number
+  /** 实际回收章节号（回收时填） */
+  actualPayoffChapter?: number
 }
 
 /** 创建或更新伏笔。 */
@@ -535,24 +555,110 @@ export async function upsertForeshadow(
   if (input.status !== undefined) fields[FORESHADOW_F.STATUS] = [input.status]
   if (input.importance !== undefined) fields[FORESHADOW_F.IMPORTANCE] = input.importance
   if (input.note !== undefined) fields[FORESHADOW_F.NOTE] = input.note
-  return upsert(baseToken, TABLE.FORESHADOW, FORESHADOW_F.CONTENT, input.content, fields, signal)
+
+  // 章节关联：章节号 → 章节记录 id。章节还不存在（未建章纲壳）时不阻塞
+  // 伏笔建档，但必须告警——否则「埋设章节」静默留空，伏笔逾期检查
+  // （consistency H3）与待回收列表都会漏掉它。
+  const preWarnings: string[] = []
+  const links: Record<string, string[]> = {}
+  const chapterLink = async (
+    no: number | undefined,
+    field: string,
+    label: string,
+  ): Promise<void> => {
+    if (no === undefined) return
+    const rid = await findChapterRecordId(baseToken, no, signal)
+    if (rid === undefined) {
+      preWarnings.push(
+        `第 ${no} 章不存在，「${label}」未关联。可先用 novel_manage_outline 建章后重新 upsert 补上。`,
+      )
+      return
+    }
+    links[field] = [rid]
+  }
+  await chapterLink(input.plantChapter, FORESHADOW_F.PLANT_CHAPTER, '埋设章节')
+  await chapterLink(input.planPayoffChapter, FORESHADOW_F.PLAN_PAYOFF_CHAPTER, '计划回收章节')
+  await chapterLink(input.actualPayoffChapter, FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER, '实际回收章节')
+
+  const r = await upsert(baseToken, TABLE.FORESHADOW, FORESHADOW_F.CONTENT, input.content, fields, signal, links)
+  return { ...r, warnings: [...preWarnings, ...r.warnings] }
 }
 
-/** 查询伏笔。status 为空返回全部。 */
+/** 章节表 recordId → 章节号 映射（供 link 单元格反解章节号）。 */
+async function chapterNoByRecordId(
+  baseToken: string,
+  signal?: AbortSignal,
+): Promise<Map<string, number>> {
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.CHAPTER, {
+      fieldIds: [CHAPTER_F.NO],
+      limit: 200,
+    }, signal),
+  )
+  const m = new Map<string, number>()
+  for (const r of rows) {
+    const id = r['__recordId']
+    const no = r[CHAPTER_F.NO]
+    if (typeof id === 'string' && typeof no === 'number') m.set(id, no)
+  }
+  return m
+}
+
+/** link 单元格 → 首个 recordId（空/异形单元格返回 undefined）。 */
+function firstLinkId(v: unknown): string | undefined {
+  const first = Array.isArray(v) ? v[0] : v
+  if (first === undefined || first === null) return undefined
+  if (typeof first === 'object' && 'id' in first) {
+    const id = (first as { id: unknown }).id
+    return typeof id === 'string' ? id : undefined
+  }
+  return typeof first === 'string' && first !== '' ? first : undefined
+}
+
+/** link 单元格 → 全部 recordId。 */
+function allLinkIds(v: unknown): string[] {
+  if (!Array.isArray(v)) {
+    const one = firstLinkId(v)
+    return one === undefined ? [] : [one]
+  }
+  return v.map((item) => firstLinkId(item)).filter((id): id is string => id !== undefined)
+}
+
+/** 查询伏笔。status 为空返回全部。章节号由 link 反解。 */
 export async function queryForeshadows(
   baseToken: string,
   options: { status?: string; limit?: number } = {},
   signal?: AbortSignal,
-): Promise<{ content: string; type: string; status: string; importance: number }[]> {
+): Promise<{
+  content: string; type: string; status: string; importance: number
+  plantChapter?: number; planPayoffChapter?: number; actualPayoffChapter?: number
+}[]> {
   const rows = base.matrixToObjects(
     await base.listRecords(baseToken, TABLE.FORESHADOW, {
       fieldIds: [
         FORESHADOW_F.CONTENT, FORESHADOW_F.TYPE,
         FORESHADOW_F.STATUS, FORESHADOW_F.IMPORTANCE,
+        FORESHADOW_F.PLANT_CHAPTER, FORESHADOW_F.PLAN_PAYOFF_CHAPTER,
+        FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER,
       ],
       limit: Math.min(options.limit ?? 200, 200),
     }, signal),
   )
+  // 只有存在带章节的伏笔时才需要章节映射（省一次章节表查询）
+  const noMap = new Map<string, number>()
+  const chapterNoOf = (v: unknown): number | undefined => {
+    const id = firstLinkId(v)
+    if (id === undefined) return undefined
+    if (noMap.size === 0) return undefined
+    return noMap.get(id)
+  }
+  const needsMap = rows.some((r) =>
+    firstLinkId(r[FORESHADOW_F.PLANT_CHAPTER]) !== undefined
+    || firstLinkId(r[FORESHADOW_F.PLAN_PAYOFF_CHAPTER]) !== undefined
+    || firstLinkId(r[FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER]) !== undefined)
+  if (needsMap) {
+    for (const [id, no] of await chapterNoByRecordId(baseToken, signal)) noMap.set(id, no)
+  }
 
   return rows
     .map((r) => ({
@@ -560,6 +666,9 @@ export async function queryForeshadows(
       type: firstStr(r[FORESHADOW_F.TYPE]),
       status: firstStr(r[FORESHADOW_F.STATUS]),
       importance: num(r[FORESHADOW_F.IMPORTANCE]),
+      plantChapter: chapterNoOf(r[FORESHADOW_F.PLANT_CHAPTER]),
+      planPayoffChapter: chapterNoOf(r[FORESHADOW_F.PLAN_PAYOFF_CHAPTER]),
+      actualPayoffChapter: chapterNoOf(r[FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER]),
     }))
     .filter((f) => f.content !== '')
     .filter((f) => options.status === undefined || f.status === options.status)
@@ -575,6 +684,11 @@ export interface PlotlineInput {
   type?: string
   status?: string
   description?: string
+  /**
+   * 剧情线覆盖的章节号列表（整体替换语义：每次 upsert 传全量）。
+   * breakthrough 用它判断「本章是否触发该剧情线」——不填则该线永远不激活。
+   */
+  chapterNos?: number[]
 }
 
 /** 创建或更新剧情线（主线 / 支线）。 */
@@ -587,7 +701,29 @@ export async function upsertPlotline(
   if (input.type !== undefined) fields[PLOTLINE_F.TYPE] = [input.type]
   if (input.status !== undefined) fields[PLOTLINE_F.STATUS] = [input.status]
   if (input.description !== undefined) fields[PLOTLINE_F.DESCRIPTION] = input.description
-  return upsert(baseToken, TABLE.PLOTLINE, PLOTLINE_F.NAME, input.name, fields, signal)
+
+  const preWarnings: string[] = []
+  const links: Record<string, string[]> = {}
+  if (input.chapterNos !== undefined) {
+    const ids: string[] = []
+    for (const no of input.chapterNos) {
+      const rid = await findChapterRecordId(baseToken, no, signal)
+      if (rid === undefined) {
+        preWarnings.push(
+          `第 ${no} 章不存在，未关联到剧情线「${input.name}」。`
+            + `可先建章后重新 upsert（chapterNos 需传全量）。`,
+        )
+        continue
+      }
+      ids.push(rid)
+    }
+    // 整体替换语义：即使部分章节缺失也要写回已解析的部分，
+    // 否则一次手误就要永远带着错误的全量列表
+    links[PLOTLINE_F.CHAPTERS] = ids
+  }
+
+  const r = await upsert(baseToken, TABLE.PLOTLINE, PLOTLINE_F.NAME, input.name, fields, signal, links)
+  return { ...r, warnings: [...preWarnings, ...r.warnings] }
 }
 
 /** 查询剧情线。 */
@@ -595,23 +731,33 @@ export async function queryPlotlines(
   baseToken: string,
   options: { type?: string } = {},
   signal?: AbortSignal,
-): Promise<{ name: string; type: string; status: string; description: string }[]> {
+): Promise<{ name: string; type: string; status: string; description: string; chapters?: number[] }[]> {
   const rows = base.matrixToObjects(
     await base.listRecords(baseToken, TABLE.PLOTLINE, {
       fieldIds: [
         PLOTLINE_F.NAME, PLOTLINE_F.TYPE,
-        PLOTLINE_F.STATUS, PLOTLINE_F.DESCRIPTION,
+        PLOTLINE_F.STATUS, PLOTLINE_F.DESCRIPTION, PLOTLINE_F.CHAPTERS,
       ],
       limit: 200,
     }, signal),
   )
+  const needsMap = rows.some((r) => allLinkIds(r[PLOTLINE_F.CHAPTERS]).length > 0)
+  const noMap = needsMap ? await chapterNoByRecordId(baseToken, signal) : new Map<string, number>()
   return rows
-    .map((r) => ({
-      name: str(r[PLOTLINE_F.NAME]),
-      type: firstStr(r[PLOTLINE_F.TYPE]),
-      status: firstStr(r[PLOTLINE_F.STATUS]),
-      description: str(r[PLOTLINE_F.DESCRIPTION]),
-    }))
+    .map((r) => {
+      const chapterIds = allLinkIds(r[PLOTLINE_F.CHAPTERS])
+      const chapters = chapterIds
+        .map((id) => noMap.get(id))
+        .filter((no): no is number => no !== undefined)
+        .sort((a, b) => a - b)
+      return {
+        name: str(r[PLOTLINE_F.NAME]),
+        type: firstStr(r[PLOTLINE_F.TYPE]),
+        status: firstStr(r[PLOTLINE_F.STATUS]),
+        description: str(r[PLOTLINE_F.DESCRIPTION]),
+        ...(chapterIds.length === 0 ? {} : { chapters }),
+      }
+    })
     .filter((p) => p.name !== '')
     .filter((p) => options.type === undefined || p.type === options.type)
 }
