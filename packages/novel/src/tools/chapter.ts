@@ -58,6 +58,13 @@ function registerWriteChapter(ctx: Context): void {
       volume: { type: 'string', description: 'Volume name this chapter belongs to.' },
       outline: { type: 'string', description: 'Outline notes for this chapter.' },
       storyTime: { type: 'string', description: 'In-story time of this chapter, e.g. "三年后 秋".' },
+      cast: {
+        type: 'array', items: { type: 'string' },
+        description: 'Characters appearing in this chapter. Names only (e.g. "沈砚"); '
+          + 'optional parenthetical note is auto-split (e.g. "陆铮（不在场）" → name="陆铮", note="不在场"). '
+          + 'Recorded bidirectionally: chapter.出场人物 ∪ this name, and each character.出场章节 ∪ this chapter. '
+          + 'Unresolvable names yield warnings but do not block the write.',
+      },
       spaceId: { type: 'string', description: 'Wiki space id; provide to also create a wiki node.' },
       parentNodeToken: { type: 'string', description: 'Wiki parent node token (usually the volume node).' },
     },
@@ -88,6 +95,7 @@ function registerWriteChapter(ctx: Context): void {
           ...args.volume === undefined ? {} : { volume: args.volume },
           ...args.outline === undefined ? {} : { outline: args.outline },
           ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
+          ...args.cast === undefined ? {} : { cast: args.cast },
         },
         {
           ...args.spaceId === undefined ? {} : { spaceId: args.spaceId },

@@ -24,6 +24,8 @@ import {
   resolveChapterMount, findVolumeRecordId, rememberChapterRecordId, findChapterRecordIdCached,
 } from './organize.ts'
 import { createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
+import { splitParticipantNote } from './memory.ts'
+import { CHARACTER_F } from '@unwr/schema'
 
 /**
  * 待写入的字段集合。
@@ -47,6 +49,12 @@ export interface WriteChapterParams {
   outline?: string
   /** 故事内时间 */
   storyTime?: string
+  /**
+   * 本章出场人物名列表。登记**双向出场索引**（章节表.出场人物 ∪=
+   * cast；人物表.出场章节 ∪= 本章）。追加去重：重复提交不产生重复关联。
+   * 人物表中不存在的名字 → 告警跳过，不阻塞写作。
+   */
+  cast?: string[]
 }
 
 /** 写章节的可选动作。 */
@@ -324,6 +332,11 @@ async function fillChapterShell(
   //    link 收敛延迟 ~6s+ 的问题，见 selfheal.ts:52080412）
   rememberChapterRecordId(baseToken, chapterNo, recordId)
 
+  // 7. 双向出场索引（章节.出场人物 ∪ 人物.出场章节），追加去重
+  if (params.cast !== undefined && params.cast.length > 0) {
+    warnings.push(...await recordChapterCast(baseToken, chapterNo, params.cast, signal))
+  }
+
   return {
     chapterNo,
     title: params.title,
@@ -514,6 +527,125 @@ export async function awaitVisible(
     + '短时间内按字段查询可能检测不到它。',
   )
   return false
+}
+
+/** link 单元格 → recordId 列表（兼容 [{id}] 与裸字符串两种形状）。 */
+function cellLinkIds(v: unknown): string[] {
+  const arr = Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]
+  const out: string[] = []
+  for (const item of arr) {
+    if (typeof item === 'string') out.push(item)
+    else if (typeof item === 'object' && item !== null && 'id' in item) {
+      const id = (item as { id: unknown }).id
+      if (typeof id === 'string') out.push(id)
+    }
+  }
+  return out
+}
+
+/**
+ * 登记本章的**双向出场索引**（实机决策 2026-09-03，用户拍板）：
+ *   - 章节表.出场人物 ∪= 本章人物
+ *   - 人物表.出场章节 ∪= 本章记录
+ *
+ * **追加语义**（唯一不自相矛盾的选择）：模型不可能知道全量出场历史，
+ * 替换语义一次传错就会抹掉历史；续写/改稿重提交靠并集去重幂等。
+ *
+ * 人物按精确姓名解析（剥离尾随括号注记后兜底，如「陆铮（不在场）」）；
+ * 解析失败的名字进 warnings 跳过——不阻塞写作，缺了可以补提交。
+ * 读取走 record-get（无列表索引延迟），写入走自愈包装。
+ *
+ * @returns 告警信息（人物不存在等），调用方并入结果
+ */
+export async function recordChapterCast(
+  baseToken: string,
+  chapterNo: number,
+  cast: readonly string[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const warnings: string[] = []
+  const names = cast.map((s) => s.trim()).filter((s) => s !== '')
+  if (names.length === 0) return warnings
+
+  const chapterRecordId = await findChapterRecord(baseToken, chapterNo, signal)
+  if (chapterRecordId === undefined) {
+    warnings.push(`第 ${chapterNo} 章记录不存在，出场人物未登记。`)
+    return warnings
+  }
+
+  // 一次拉人物表建 name→id 映射（cast 通常 3-8 人，比逐名查表省调用）
+  const charRows = base.matrixToObjects(
+    await base.listAllRecords(baseToken, TABLE.CHARACTER, {
+      fieldIds: [CHARACTER_F.NAME],
+    }, signal),
+  )
+  const idByName = new Map<string, string>()
+  for (const r of charRows) {
+    const name = r[CHARACTER_F.NAME]
+    const id = r['__recordId']
+    if (typeof name === 'string' && typeof id === 'string') idByName.set(name, id)
+  }
+  const resolve = (raw: string): string | undefined => {
+    const direct = idByName.get(raw)
+    if (direct !== undefined) return direct
+    const { name } = splitParticipantNote(raw)
+    return name === raw ? undefined : idByName.get(name)
+  }
+
+  const resolvedIds: string[] = []
+  const unresolved: string[] = []
+  for (const raw of names) {
+    const id = resolve(raw)
+    if (id === undefined) unresolved.push(raw)
+    else if (!resolvedIds.includes(id)) resolvedIds.push(id)
+  }
+  if (unresolved.length > 0) {
+    warnings.push(
+      `以下人物在人物表中不存在，出场索引未登记：${unresolved.join('、')}。`
+        + '可先用 novel_manage_character 建档，再重新提交 cast 补登记。',
+    )
+  }
+  if (resolvedIds.length === 0) return warnings
+
+  // 章节侧：现值 ∪ 本章人物（record-get 读现值，无列表索引延迟）
+  const chapterCell = base.matrixToObjects(
+    await base.getRecords(baseToken, TABLE.CHAPTER, [chapterRecordId], signal),
+  )[0]
+  const currentCast = chapterCell === undefined ? [] : cellLinkIds(chapterCell[CHAPTER_F.CAST])
+  const mergedCast = [...currentCast]
+  for (const id of resolvedIds) {
+    if (!mergedCast.includes(id)) mergedCast.push(id)
+  }
+  if (mergedCast.length !== currentCast.length) {
+    await updateRecordsWithSelfHeal(
+      baseToken, TABLE.CHAPTER,
+      { [chapterRecordId]: { [CHAPTER_F.CAST]: mergedCast.map((id) => ({ id })) } },
+      signal,
+      (msg) => { warnings.push(msg) },
+    )
+  }
+
+  // 人物侧：每人 出场章节 ∪= 本章
+  const personRows = base.matrixToObjects(
+    await base.getRecords(baseToken, TABLE.CHARACTER, resolvedIds, signal),
+  )
+  const personPatch: Record<string, Record<string, CellValue>> = {}
+  for (const row of personRows) {
+    const rid = row['__recordId']
+    if (typeof rid !== 'string') continue
+    const current = cellLinkIds(row[CHARACTER_F.APPEARANCES])
+    if (current.includes(chapterRecordId)) continue
+    personPatch[rid] = {
+      [CHARACTER_F.APPEARANCES]: [...current, chapterRecordId].map((id) => ({ id })),
+    }
+  }
+  if (Object.keys(personPatch).length > 0) {
+    await updateRecordsWithSelfHeal(
+      baseToken, TABLE.CHARACTER, personPatch, signal,
+      (msg) => { warnings.push(msg) },
+    )
+  }
+  return warnings
 }
 
 /** 读取一章正文。 */

@@ -161,7 +161,7 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | 工具 | 说明 |
 |------|------|
 | `novel_build_context` | 组装起草某章所需的分层上下文（五层记忆 + 人物状态 + 相关设定 + 题材指引），内部并行拉取 |
-| `novel_write_chapter` | **新建章节**：建正文文档 + 写章节索引 + 可选建 Wiki 节点 |
+| `novel_write_chapter` | **新建章节**：建正文文档 + 写章节索引 + 可选建 Wiki 节点 + 双向登记 `cast`（章节表.出场人物 ∪ 人物表.出场章节） |
 | `novel_read_chapter` | 读章节正文，支持 full / outline / keyword 三种模式 |
 | `novel_append_chapter` | 续写已有章节，并回写字数 |
 | `novel_update_summary` | **沉淀章节摘要**（分层记忆写入侧） |
