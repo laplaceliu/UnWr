@@ -28,12 +28,53 @@ export function registerMemoryTools(ctx: Context): void {
   registerBookSummary(ctx)
 }
 
+/**
+ * 一次性给出 newInfo 在工具历史里被传错的所有形态，便于
+ * execute 入口识别模型"把别的字段塞进 newInfo 对象"这一最常见
+ * 失误（实机 2026-09-03 第 10 章：模型把
+ * `{item, newForeshadows, endState, freeform}` 整个当成 newInfo 传），
+ * 抛一条自纠正的报错让模型下一轮自己改对。
+ */
+const NEW_INFO_MISTAKE_KEYS = new Set([
+  'item',
+  'newForeshadows',
+  'endState',
+  'freeform',
+  'foreshadows',
+  'info',
+  'new_info',
+])
+
+/** 自纠正：newInfo 传成对象时给模型的"正确 JSON 示例"提示。 */
+const SHAPE_HINT = `newInfo 必须是字符串数组（每条一句本章揭示的新信息）。
+你是不是把 newForeshadows / endState / freeform 嵌进了 newInfo 对象里？它们都是
+与 newInfo 平级的"顶层字段"，请按下面的扁平结构传参：
+
+{
+  "chapterNo": 10,
+  "scene": "景和十一年 仲春 十四 夜，齐王府门前、洗骨司明堂。",
+  "events": ["..."],
+  "characterChanges": ["..."],
+  "newInfo": ["新信息 1", "新信息 2"],
+  "newForeshadows": ["新伏笔 1", "新伏笔 2"],
+  "endState": "章末状态：…",
+  "freeform": "其它值得记住的"
+}
+
+参考：docs/requirements/05-memory-and-consistency.md 第 2 节「分层记忆结构」
+与 packages/novel/src/domain/memory.ts 的 chapterSummaryRecord 形状。`
+
 function registerUpdateSummary(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_update_summary',
     description: 'Write or update the structured summary of a chapter. '
       + 'CALL THIS AFTER FINISHING A CHAPTER — without it, later chapters cannot recall '
-      + 'what happened here. Fill as many structured fields as you can.',
+      + 'what happened here. Fill as many structured fields as you can. '
+      + 'All structured fields below are flat top-level keys on the parameters object — '
+      + 'do NOT nest newForeshadows / endState / freeform inside newInfo. '
+      + 'Correct shape example: '
+      + '{"chapterNo":1, "scene":"...", "events":["..."], "characterChanges":["..."], '
+      + '"newInfo":["..."], "newForeshadows":["..."], "endState":"...", "freeform":"..."}.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
@@ -46,16 +87,32 @@ function registerUpdateSummary(ctx: Context): void {
         type: 'array', items: { type: 'string' },
         description: 'How each character changed in this chapter.',
       },
+      // 实机 2026-09-03 第 10 章：模型曾把
+      // `{item, newForeshadows, endState, freeform}` 整个当成 newInfo 传，
+      // DSH schema 直接报 `"newInfo" must be an array`。这里放宽成 oneOf 让
+      // 对象能进到 execute，由 execute 入口抛自纠正错误告诉模型该长什么样
+      // ——比单纯 "must be an array" 信息密度高一个量级。正确调用永远命中
+      // 分支 0（字符串数组），错误调用命中分支 1（object）→ 立即报错并
+      // 把正确 JSON 示例回吐给模型，下一轮它能自己改对。
       newInfo: {
-        type: 'array', items: { type: 'string' },
-        description: 'New information revealed.',
+        oneOf: [
+          {
+            type: 'array', items: { type: 'string' },
+            description: '新揭示信息，每条一句的字符串数组',
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】模型把别的字段塞进了 newInfo 对象——execute 会拒并返回正确示例',
+          },
+        ],
+        description: '本章新揭示的信息（字符串数组，每条一句）。必须是顶层字段，不要把 newForeshadows / endState / freeform 塞进 newInfo 对象。',
       },
       newForeshadows: {
         type: 'array', items: { type: 'string' },
-        description: 'New foreshadowing planted in this chapter.',
+        description: 'New foreshadowing planted in this chapter. 顶层字段，不要嵌进 newInfo。',
       },
-      endState: { type: 'string', description: 'Situation and open questions at chapter end.' },
-      freeform: { type: 'string', description: 'Anything else worth remembering.' },
+      endState: { type: 'string', description: 'Situation and open questions at chapter end. 顶层字段，不要嵌进 newInfo。' },
+      freeform: { type: 'string', description: 'Anything else worth remembering. 顶层字段，不要嵌进 newInfo。' },
     },
     output: {
       schema: {
@@ -69,6 +126,29 @@ function registerUpdateSummary(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
+      // 实机 2026-09-03：模型曾传 `newInfo: {item, newForeshadows, endState, freeform}`
+      // ——把别的字段塞进了 newInfo 对象。schema 放宽后这里专门防这种失误：
+      // 命中 NEW_INFO_MISTAKE_KEYS 里的任意一个键 → 抛自纠正错误并给完整
+      // 正确 JSON 示例，让模型下一轮能自己改对。命中非空但不含错形态键
+      // 的对象（比如未来的演化字段）→ 走"不是数组"通用路径。
+      if (args.newInfo !== undefined && args.newInfo !== null) {
+        if (Array.isArray(args.newInfo)) {
+          // 正常分支
+        } else if (typeof args.newInfo === 'object') {
+          const obj = args.newInfo as Record<string, unknown>
+          const keys = Object.keys(obj)
+          const mistakeHit = keys.some((k) => NEW_INFO_MISTAKE_KEYS.has(k))
+          // 即使没命中已知键，凡是 object 形态的 newInfo 都是模型对
+          // schema 形态的误读，统一给自纠正示例，避免"对象能传但悄悄落空"
+          // 这种比"立刻报错"更难排查的隐性失败。
+          if (mistakeHit || keys.length > 0) {
+            throw new Error(SHAPE_HINT)
+          }
+          throw new Error(`newInfo 收到空对象 ${JSON.stringify(obj)}：` + SHAPE_HINT)
+        } else {
+          throw new Error(`newInfo 必须是字符串数组，实际收到 ${typeof args.newInfo}。` + SHAPE_HINT)
+        }
+      }
       const r = await updateChapterSummary(
         resolveWorkToken(args),
         args.chapterNo,
