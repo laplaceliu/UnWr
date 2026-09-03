@@ -17,6 +17,7 @@ import {
 } from '../domain/work.ts'
 import { ensureWorkSchemaCached, initWork } from '../domain/bootstrap.ts'
 import { resolveWorkToken } from './defaults.ts'
+import { knownWorks, mergeWorks, rememberWork, rememberWorkToken } from '../domain/work-store.ts'
 
 /** 注册作品管理工具。 */
 export function registerWorkTools(ctx: Context): void {
@@ -78,6 +79,9 @@ export function registerWorkTools(ctx: Context): void {
                 name: { type: 'string', required: true },
                 url: { type: 'string' },
                 updatedAt: { type: 'string' },
+                // 'search' = 来自飞书搜索；'local' = 来自本机记录
+                // （新建作品的索引延迟，或库已不在搜索结果里）
+                source: { type: 'string' },
               },
             },
           },
@@ -110,8 +114,30 @@ export function registerWorkTools(ctx: Context): void {
       const signal = exec.signal
 
       if (args.action === 'list') {
-        const works = await listWorks({}, signal)
-        return { action: 'list', total: works.length, works }
+        const remote = await listWorks({}, signal)
+        // 新建作品的飞书搜索索引有分钟级延迟（e2e 已为此时延写过轮询容忍），
+        // 而它恰恰是模型最需要找的那一个。用本机记录兜底补全。
+        const { works, localOnly } = mergeWorks(remote, knownWorks())
+        // 远程结果也记入本机：下次重启后即便索引没命中，也还记得名字与 token
+        for (const w of remote) rememberWork(w)
+        return {
+          action: 'list',
+          total: works.length,
+          works: works.map((w) => ({
+            baseToken: w.baseToken,
+            name: w.name === '' ? '(未命名作品)' : w.name,
+            ...w.url === undefined ? {} : { url: w.url },
+            ...w.updatedAt === undefined ? {} : { updatedAt: w.updatedAt },
+            // 明确标注来源：本机记录可能已过期（库被删/权限被撤）
+            source: localOnly.some((x) => x.baseToken === w.baseToken) ? 'local' : 'search',
+          })),
+          ...localOnly.length === 0 ? {} : {
+            warnings: [
+              `以下 ${localOnly.length} 部作品来自本机记录，飞书搜索索引可能尚未收录：`
+                + `${localOnly.map((w) => w.name === '' ? w.baseToken : w.name).join('、')}`,
+            ],
+          },
+        }
       }
 
       if (args.action === 'create') {
@@ -146,8 +172,15 @@ export function registerWorkTools(ctx: Context): void {
           ...folderUrl === undefined ? {} : { extraFields: { [WORK_F.FOLDER_URL]: folderUrl } },
         }, signal)
 
-        // 新建的作品立即成为会话默认——后续工具无需再抄 token
+        // 新建的作品立即成为会话默认——后续工具无需再抄 token。
+        // 同时写入本机作品注册表：否则 DSH 重启后 list 搜不到它
+        // （飞书搜索索引延迟），模型又得靠上下文记忆找回来。
         resolveWorkToken({ workToken: created.base_token })
+        rememberWork({
+          baseToken: created.base_token,
+          name: args.name,
+          ...created.url === undefined ? {} : { url: created.url },
+        })
 
         return {
           action: 'create',
@@ -176,12 +209,21 @@ export function registerWorkTools(ctx: Context): void {
       // 而不是等后面的写入报晦涩的 NOTEXIST。校验失败 = 库不可访问。
       const schemaCheck = await ensureWorkSchemaCached(args.workToken, signal)
       if (!schemaCheck.ok) {
+        // token 不可访问时优先列出本机已知作品——list 依赖飞书搜索索引，
+        // 新建作品可能搜不到，光说"去 list"解决不了问题
+        const known = knownWorks()
+          .filter((w) => w.baseToken !== args.workToken)
+          .map((w) => `  - ${w.name === '' ? w.baseToken : `${w.name} → ${w.baseToken}`}`)
         throw new Error(
-          `作品库 ${args.workToken} 不可访问（token 可能耗错）。`
-            + '请用 novel_manage_work(action=list) 核对 base_token；'
-            + '之后的调用可省略 workToken（自动沿用会话默认作品）。',
+          `作品库 ${args.workToken} 不可访问（token 可能耗错、库被删或权限失效）。`
+            + (known.length === 0
+              ? '请用 novel_manage_work(action=list) 核对 base_token。'
+              : `本机记录里的其他作品：\n${known.join('\n')}`)
+            + '\n之后的调用可省略 workToken（自动沿用上次使用的作品）。',
         )
       }
+      // 走到这里说明 token 确实可用：记下来，下次重启直接恢复
+      rememberWorkToken(args.workToken)
       const schemaWarnings: string[] = []
       if (schemaCheck.createdTables.length > 0) {
         schemaWarnings.push(`已自动补建缺失的数据表：${schemaCheck.createdTables.join(', ')}`)
@@ -232,6 +274,8 @@ export function registerWorkTools(ctx: Context): void {
 
       if (args.action === 'get_config') {
         const cfg = await getWorkConfig(args.workToken, signal)
+        // 补上名字：之前可能只记住了 token（占位无名），这里学到就写回
+        rememberWork({ baseToken: args.workToken, name: cfg.name })
         return {
           action: 'get_config',
           total: 1,

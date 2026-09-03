@@ -129,6 +129,23 @@ npx @deepseek-ai/dsh web      # 端口 3080
 #   [unwr] 已注册工具 (1): novel_build_context
 ```
 
+### 作品注册与 workToken 承接
+
+工具调用可省略 `workToken`：任意一次成功调用会把它记为默认，后续自动沿用，
+显式传入则切换。默认作品**持久化在 `~/.unwr/work-state.json`**（仓库外，
+不含在工作区里写真实 token），因此 **DSH 重启后自动恢复，无需任何调用**。
+
+同时维护一份「本机已知作品」清单，用于补 `drive +search` 的索引延迟：
+新建的 bitable 有**分钟级**延迟才会出现在搜索结果里，而这恰恰是模型最需要
+找的那一步。`novel_manage_work(action=list)` 会合并搜索结果与本机记录，
+本地独有的条目标注 `source: "local"` 并在 `warnings` 里说明。
+
+无记录时的报错会直接列出已知作品名 + token，一次调用即可恢复，不必绕 `list`。
+可用 `UNWR_STATE_FILE` 覆盖状态文件位置（测试环境自动改用临时目录）。
+
+主会话与子代理是独立进程，共享同一份状态文件——子代理里 `create` 的作品，
+主会话的 `list` 也能看到。
+
 **源码版 DSH**（可加载 `.ts`，适合开发）：
 
 ```bash
