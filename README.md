@@ -391,7 +391,37 @@ spawn provider 的 `inheritsParentContext = false`：子代理是**全新会话�
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `UNWR_LARK_BIN` | `lark-cli` | lark-cli 可执行文件路径 |
+| `UNWR_LARK_BIN` | `lark-cli` | lark-cli 可执行文件路径（优先级低于插件配置 `larkBin`，见下） |
 | `UNWR_MAX_CONCURRENCY` | `8` | 并发上限，避免触发飞书限流 |
 | `UNWR_TEST_BASE` | 测试库 token | 测试用作品库 |
 | `UNWR_TEST_SPACE` | 测试空间 ID | 测试用知识空间 |
+
+### 指定 lark-cli 路径（Windows 必读）
+
+lark-cli 路径按四级优先解析：
+
+1. **插件配置 `larkBin`**——写进 profile patch 的显式声明，随部署走、可
+   `--dump-config` 检查。**DSH 沙箱可能不传播用户级环境变量**（Windows 实机
+   2026-09-03），env 不可靠时用这个
+2. 环境变量 `UNWR_LARK_BIN`
+3. **Windows 自动探测**：npm / pnpm / yarn 全局 bin、scoop shims、
+   chocolatey bin、winget WindowsApps，末位**扫描进程 PATH** 逐目录找
+   `lark-cli.cmd/.exe/.bat`。注意：PATH 扫描只对**已进入 DSH 进程 PATH**
+   的目录有效——shell rc（.bashrc 等）里追加的 PATH 对 DSH 不可见，
+   那种安装位置必须用 `larkBin` 绝对路径
+4. 裸名 `lark-cli`（Windows 经 cmd /c 走 PATH；POSIX 直接 PATH）
+
+1/2 写**裸名**时 Windows 上也会先按 3 的目录解析为绝对路径；
+`verbose: true` 时启动日志打印解析结果与来源
+（`插件配置 larkBin` / `环境变量` / `自动探测` / `PATH 裸名`）。
+
+在用户 profile patch 里按 id 覆盖 unwr-novel 行配置（**整行替换，须重述全部键**）：
+
+```yaml
+- insert:
+    - id: unwr-novel
+      name: "@laplaceliu/unwr/dist/unwr-novel.mjs"
+      config:
+        readOnlySafeMode: true
+        larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
+```

@@ -20,10 +20,14 @@
     # name 按包名引用（@laplaceliu/unwr/dist/...）：组合包安装后由 Node 模块解析定位，
     # 无需绝对路径——这是与开发态（占位符 + sync 脚本）最大的差异。
     - id: unwr-novel
-      name: @laplaceliu/unwr/dist/unwr-novel.mjs
+      name: "@laplaceliu/unwr/dist/unwr-novel.mjs"
       config:
         readOnlySafeMode: true
         verbose: false
+        # lark-cli 路径解析优先级：larkBin > UNWR_LARK_BIN > Windows 常见安装
+        # 位置自动探测（npm/pnpm/yarn 全局 bin）> 裸名走 PATH。
+        # DSH 沙箱不传播用户级 env（Windows 实机 2026-09-03）时用 larkBin 显式指定：
+        # larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
 
     # ---------- 工作台 UI（npx 版 DSH 需要 bundle） ----------
     # dist/unwr-web.mjs 由 scripts/build-plugin.mjs 产出，同时把
@@ -31,7 +35,7 @@
     # import.meta.dirname + 'public' 定位静态资源）。
     # 访问路径：DSH 端口根 + /workbench
     - id: unwr-web
-      name: @laplaceliu/unwr/dist/unwr-web.mjs
+      name: "@laplaceliu/unwr/dist/unwr-web.mjs"
       config: {}
 
     # ---------- 世界观设定官 ----------

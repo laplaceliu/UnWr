@@ -139,8 +139,10 @@ patchLines.splice(blkStart, blkEnd - blkStart + 1, ...TOOL_COMMENT_BLOCK.replace
 patchLines.splice(0, insertIdx, ...BUNDLE_HEADER.split('\n'))
 
 let out = patchLines.join('\n')
-out = replaceN(out, '__UNWR_ROOT__/dist/unwr-novel.mjs', `${pkgName}/dist/unwr-novel.mjs`, 1, 'novel 插件行')
-out = replaceN(out, '__UNWR_ROOT__/dist/unwr-web.mjs', `${pkgName}/dist/unwr-web.mjs`, 1, 'web 插件行')
+// scoped 包名以 @ 开头——@ 是 YAML 保留指示符，裸标量会解析失败
+// （7 个 agent 行的 "@deepseek-ai/..." 带引号同理），故改写值加双引号。
+out = replaceN(out, '__UNWR_ROOT__/dist/unwr-novel.mjs', `"${pkgName}/dist/unwr-novel.mjs"`, 1, 'novel 插件行')
+out = replaceN(out, '__UNWR_ROOT__/dist/unwr-web.mjs', `"${pkgName}/dist/unwr-web.mjs"`, 1, 'web 插件行')
 out = replaceN(out, '        verbose: true', '        verbose: false', 1, 'verbose 开关')
 
 // 只检测**残留的占位符路径引用**（插件行/说明性注释提及占位符名不算失败）

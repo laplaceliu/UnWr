@@ -31,6 +31,7 @@ import {
   contextDigest, checks, tableView, parseAgentProfiles, STATIC_MIME,
   type AgentProfile,
 } from './api.ts'
+import { configureLark } from '../../feishu/src/cli.ts'
 
 /* ============================== 静态资源 ============================== */
 
@@ -171,7 +172,19 @@ function apiDispatcher(publicDir: string) {
 export const name = 'unwr-web'
 export const inject = ['webServer']
 
-export function apply(_ctx: unknown, _config: unknown): void {
+/** unwr-web 插件配置。 */
+export interface Config {
+  /**
+   * lark-cli 路径（与 unwr-novel 的 larkBin 语义一致）。
+   * web bundle 内联独立的适配层副本，与 novel 插件的配置互不相通，
+   * 两个插件都要配（或在 patch 里只给用到的那个配）。
+   */
+  larkBin?: string
+}
+
+export function apply(_ctx: unknown, _config: Config | unknown): void {
+  const config = (_config ?? {}) as Config
+  configureLark({ bin: config.larkBin })
   // 解析 dist/public/：本文件被 esbuild bundle 到 dist/unwr-web.mjs，
   // 所以 import.meta.dirname 在运行时 = dist/。
   const here = dirname(fileURLToPath(import.meta.url))

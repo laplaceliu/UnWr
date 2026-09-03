@@ -24,6 +24,7 @@ import { registerMemoryTools } from './tools/memory.ts'
 import { registerConsistencyTools } from './tools/consistency.ts'
 import { registerRevisionTools } from './tools/revision.ts'
 import { registerEntityTools } from './tools/entity.ts'
+import { configureLark, resolveLarkBinDetailed } from '@unwr/feishu'
 import { registerWorkTools } from './tools/work.ts'
 import { registerCalculateTools } from './tools/calculate.ts'
 import { registerBreakthroughTools } from './tools/breakthrough.ts'
@@ -41,6 +42,13 @@ export interface Config {
   verbose?: boolean
   /** 是否向主会话注入写作约定 system prompt（默认开启） */
   injectSystemPrompt?: boolean
+  /**
+   * lark-cli 可执行文件路径。写进 profile patch 的显式声明，随部署走、
+   * 可 --dump-config 检查——DSH 沙箱不传播用户级 env（Windows 实机 2026-09-03）
+   * 时用这个，别依赖 UNWR_LARK_BIN。留空则走 env → Windows 常见安装位置
+   * （npm/pnpm/yarn 全局 bin）→ PATH 的自动解析。
+   */
+  larkBin?: string
 }
 
 /** `ctx.tools.schemas()` 的返回形状（只取我们关心的字段）。 */
@@ -200,6 +208,10 @@ export const WRITING_CONVENTIONS = `
 `.trim()
 
 export function apply(ctx: Context, config: Config = {}): void {
+  // lark-cli 路径注入（larkBin 优先于 env 与自动探测）。必须在任何
+  // 工具注册之前——工具 execute 时才解析，但早设置便于 verbose 打印实际值。
+  configureLark({ bin: config.larkBin })
+
   // 安全策略：删除类 CLI 命令（table-delete / node-delete / record-delete）
   // 与覆盖式写入（overwrite）一律不注册，避免模型幻觉造成不可逆损失。
   if (config.readOnlySafeMode === false) {
@@ -242,6 +254,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))
     console.error(`[unwr] 插件已加载: ${name}`)
     console.error(`[unwr] 已注册工具 (${mine.length}): ${mine.join(', ')}`)
+    const resolved = resolveLarkBinDetailed()
+    const sourceLabel =
+      resolved.source === 'config' ? '插件配置 larkBin'
+      : resolved.source === 'env' ? '环境变量 UNWR_LARK_BIN'
+      : resolved.source === 'discovered' ? '自动探测'
+      : 'PATH 裸名'
+    console.error(`[unwr] lark-cli 路径解析: ${resolved.bin}（来源: ${sourceLabel}）`)
   }
 }
 
