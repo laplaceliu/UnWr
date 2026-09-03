@@ -53,6 +53,15 @@
         readOnlySafeMode: true
         verbose: true
 
+    # ---------- 工作台 UI（npx 版 DSH 需要 bundle） ----------
+    # dist/unwr-web.mjs 由 scripts/build-plugin.mjs 产出，同时把
+    # packages/web/public/ 拷到 dist/public/（plugin.ts 通过
+    # import.meta.dirname + 'public' 定位静态资源）。
+    # 访问路径：DSH 端口根 + /workbench
+    - id: unwr-web
+      name: __UNWR_ROOT__/dist/unwr-web.mjs
+      config: {}
+
     # ---------- 世界观设定官 ----------
     - id: unwr-agent-worldkeeper
       name: "@deepseek-ai/dsh-tool-subagent"

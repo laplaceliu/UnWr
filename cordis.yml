@@ -32,3 +32,11 @@
         readOnlySafeMode: true
         # 加载时向 stderr 打印已注册工具清单
         verbose: true
+
+    # 工作台 UI：把 packages/web/public/* 静态资源 + /api/* 领域路由
+    # 挂到 DSH 的 ctx.webServer 上。访问 /workbench 即可。
+    # 静态资源路径在 plugin.ts 内通过 import.meta.dirname 解析到
+    # 同级的 public/（源码版直接读 src/../public/）。
+    - id: unwr-web
+      name: __UNWR_ROOT__/packages/web/src/plugin.ts
+      config: {}

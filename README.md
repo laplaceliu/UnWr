@@ -75,14 +75,15 @@ node --import tsx/esm packages/feishu/scripts/smoke.ts
 # 为一部作品建齐 13 张表
 node --import tsx/esm packages/schema/scripts/init-work.ts <base_token>
 
-# 启动工作台（http://127.0.0.1:3311，PORT 可覆盖）
-pnpm workbench
+# 启动工作台：在 DSH 启动后访问 http://127.0.0.1:3080/workbench
+# （端口与启动方式见下「在 DSH 中运行」一节）
 ```
 
-### 工作台（packages/web）
+### 工作台（DSH 中的 UI）
 
-零新依赖的本地驾驶舱：Node 内置 `http` 起服务，领域函数直连飞书；
-前端为原生 HTML/CSS/JS 单页（无构建步骤），视觉走「墨韵纸感」。
+工作台是 DSH 的一个插件（`unwr-web`），静态资源（SPA）与 `/api/*` 路由
+都挂到 DSH 的 `ctx.webServer` 上，访问 `http://127.0.0.1:<port>/workbench`。
+DSH 启动后**不再需要独立的 `pnpm workbench` 进程**——聊天与工作台共享一个端口。
 
 | 界面 | 内容 |
 |---|---|
@@ -106,19 +107,14 @@ UnWr 打包为单文件 bundle，源码版与 npx 版 DSH 通用。详见 `docs/
 
 ```bash
 # 1. 构建（npx 版 DSH 不含 tsx，必须打包）
-pnpm build              # 产出 dist/unwr-novel.mjs
+pnpm build              # 产出 dist/unwr-novel.mjs + dist/unwr-web.mjs（+ dist/public/）
 pnpm build:watch        # 开发期热重建
 
 # 2. 挂载到 profile 的用户层 patch
-#    写入 ~/.dsh/profiles/<profile>/cordis.patch.yml：
-#
-#    - insert:
-#        - id: unwr-novel
-#          name: <UNWR_ROOT>/dist/unwr-novel.mjs   # 必须绝对路径
-#          config:
-#            readOnlySafeMode: true
-#            verbose: true
-#
+#    仓内 canonical 配置（profiles/web/cordis.patch.yml）已含 unwr-novel +
+#    unwr-web 两项；运行 `pnpm sync:patch` 后会拷到：
+#    ~/.dsh/profiles/web/cordis.patch.yml   （npx 版 DSH 用）
+#    <UNWR_ROOT>/dist/cordis.local.yml      （源码版 DSH 用 --patch 加载）
 #    DSH 要求 name 为绝对路径，故该文件需填你的实际路径；
 #    它在 ~/.dsh 下（不入 git），不会外泄。
 
