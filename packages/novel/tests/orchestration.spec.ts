@@ -36,6 +36,10 @@ const READ_ONLY_TOOLS = new Set([
   'novel_run_consistency_check',
   'novel_get_semantic_check_pack',
   'novel_build_context',
+  // 算术验算工具（WRITING_CONVENTIONS 第 14 条）：纯函数，无副作用，不写飞书。
+  // 评审官拿到它只为「把验算结果写进报告」，不改正文；改正是改稿官的活。
+  // 实机踩坑 2026-09-03：不给工具时评审靠心算报告，可能再次算错。
+  'novel_calculate',
 ])
 
 /** 起草官必须携带的记忆沉淀三件套（G1/G2/G3 的落库能力）。 */
@@ -51,6 +55,13 @@ const DRAFTER_REQUIRED = [
   'novel_manage_outline',
   // 算术规则（WRITING_CONVENTIONS 第 14 条）：写正文涉及「共/合计/总计/差值」
   // 必调。实机 2026-09-03：drafter filter 里没有就只能自算，必错。
+  'novel_calculate',
+]
+
+/** 改稿官必携带算术修正工具（算术 bug 闭环修复前提）。 */
+const REVISER_REQUIRED = [
+  'novel_revise_chapter',
+  // 算术闭环：评审回流过来的算式修稿，必须能算正确值再落笔。
   'novel_calculate',
 ]
 
@@ -203,6 +214,11 @@ describe('cordis.patch.yml ↔ 插件注册表', () => {
   it('起草官白名单含记忆沉淀三件套（G1/G2/G3 落库能力）', () => {
     const drafter = agentBlocks.find((b) => b.id === 'unwr-agent-drafter')
     expect(drafter?.allow ?? []).toEqual(expect.arrayContaining(DRAFTER_REQUIRED))
+  })
+
+  it('改稿官白名单含算术修正工具（算术 bug 闭环修复前提）', () => {
+    const reviser = agentBlocks.find((b) => b.id === 'unwr-agent-reviser')
+    expect(reviser?.allow ?? []).toEqual(expect.arrayContaining(REVISER_REQUIRED))
   })
 
   it('改稿官/救援官拿 manage_character 时 persona 必须带只读约束', () => {
