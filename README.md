@@ -150,14 +150,14 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 | `novel_update_summary` | **沉淀章节摘要**（分层记忆写入侧） |
 | `novel_record_character_state` | 记录人物章末状态快照（位置/伤势/情绪/持有物） |
 | `novel_record_event` | 记录事件索引（时间线、因果链） |
-| `novel_upsert_book_summary` | 写入卷级 / 全书摘要（长程压缩记忆） |
+| `novel_upsert_book_summary` | 卷级 / 全书摘要（长程压缩记忆）：`action=query` 读已有摘要，`action=upsert` 写入 |
 | `novel_record_chapter_tension` | 记录本章张力曲线（开局/中段/结尾三档） |
 | `novel_mark_chapter_memories_stale` | 当章被大幅修订时，标记下游章节摘要为"陈旧" |
 | `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
 | `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
 | `novel_get_review_focus` | 题材化评审重点：检查权重排序、阻断阈值、题材专项评估线（03 文档第六节差异化的入口），并附**跨题材恒定的内容红线** |
 
-| `novel_revise_chapter` | **改稿**：按场景/块/精确文本定位，支持 replace / expand / patch |
+| `novel_revise_chapter` | **改稿**：按场景/块/段落/段落区间定位，支持 replace / expand / patch / delete |
 | `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |
 | `novel_get_chapter_history` | 章节版本历史（改稿留痕，可回溯每次改动） |
 
@@ -189,15 +189,24 @@ node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
 
 ### 改稿的定位策略
 
-`novel_revise_chapter` 支持三种定位，推荐优先用 `scene`：
+`novel_revise_chapter` 支持五种定位，推荐优先用 `scene`：
 
 | 方式 | 适用 | 稳定性 |
 |------|------|--------|
 | `scene` | **推荐**。按 `## ` 场景标题定位，如「二、交锋」 | 高——标题是内容的一部分 |
-| `blockId` | 已知确切块 id | 低——**文档结构一变就失效** |
+| `scene` + `paragraph` | 场景内第 N 段（结构化定位，无需复制原文） | 高 |
+| `scene` + `startParagraph`/`endParagraph` | **段落区间**（两端都包含），一次替换/删除连续多段 | 高 |
+| `blockId`（或 `startBlockId`/`endBlockId`） | 已知确切块 id | 低——**文档结构一变就失效** |
 | `match` | 精确文本替换（patch 动作） | 取决于文本是否唯一 |
 
 场景匹配分三级：精确相等 → 剥离序号（「二、交锋」→「交锋」）→ 子串包含。
+
+**段落区间**用于「把连续几段合并成一段」这类需求——`replace` 带上
+`scene + startParagraph + endParagraph` 一次调用即可，不必 replace 首段再逐条
+delete 其余段。底层是 lark-cli 的兄弟块区间（`--start-block-id` + `--end-block-id`）。
+两点注意：区间内**所有**块都会被处理，包括段落之间夹着的引用块/列表/图片；
+操作完成后区间内的旧 `block_id` 全部失效，需重新 `novel_list_scenes`。
+段落区间不支持 `expand`（那是在单个块之后插入）。
 
 ### 一致性检查的设计取舍
 

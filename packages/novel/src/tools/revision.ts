@@ -33,7 +33,12 @@ function registerReviseChapter(ctx: Context): void {
       + '"patch" does an exact text replacement (use for polishing a sentence); '
       + '"delete" removes a whole block (cleanup of placeholder/empty paragraphs, no content needed). '
       + 'Locate the target by "scene" (the ## heading, RECOMMENDED) or "blockId". '
-      + 'For patch, provide "match" with the exact original text. '
+      + 'For patch, provide "match" with the exact original text — a single-line snippet '
+      + 'from inside ONE paragraph (newlines/blank lines are rejected: patch cannot span '
+      + 'paragraphs; use replace + scene + paragraph for that). '
+      + 'To merge several consecutive paragraphs into one, use action="replace" with '
+      + 'scene + startParagraph/endParagraph (inclusive range, one call instead of '
+      + 'replace-then-delete-twice). '
       + 'Every revision is versioned in Feishu and can be reviewed later.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
@@ -60,17 +65,49 @@ function registerReviseChapter(ctx: Context): void {
         type: 'number',
         description: '1-based paragraph index WITHIN the scene (use novel_list_scenes / '
           + 'novel_read_chapter to count). With scene, this locates one paragraph '
-          + 'structurally — more reliable than copying exact text for patch.',
+          + 'structurally — more reliable than copying exact text for patch. '
+          + 'Mutually exclusive with startParagraph/endParagraph.',
+      },
+      startParagraph: {
+        type: 'number',
+        description: 'Start of a paragraph RANGE within the scene (1-based, INCLUSIVE). '
+          + 'Must be paired with endParagraph and requires scene. Use it to merge several '
+          + 'consecutive paragraphs into one: replace with scene + startParagraph/endParagraph '
+          + 'collapses the whole range into your new content in a single call. '
+          + 'CAUTION: every block in the range is affected, including non-paragraph blocks '
+          + '(quotes, lists, images) sitting between the endpoints. '
+          + 'Not supported for action=expand.',
+      },
+      endParagraph: {
+        type: 'number',
+        description: 'End of the paragraph RANGE (1-based, INCLUSIVE). Must be paired with '
+          + 'startParagraph and requires scene.',
       },
       blockId: {
         type: 'string',
         description: 'Exact block id. Use only if you already fetched it — block ids '
-          + 'change whenever the document structure changes.',
+          + 'change whenever the document structure changes. '
+          + 'Cannot be combined with startBlockId/endBlockId.',
+      },
+      startBlockId: {
+        type: 'string',
+        description: 'Start of a sibling BLOCK RANGE (INCLUSIVE). Must be paired with '
+          + 'endBlockId; cannot be combined with blockId. Prefer scene + '
+          + 'startParagraph/endParagraph unless you already have the block ids.',
+      },
+      endBlockId: {
+        type: 'string',
+        description: 'End of the sibling BLOCK RANGE (INCLUSIVE). Must be paired with '
+          + 'startBlockId.',
       },
       match: {
         type: 'string',
         description: 'REQUIRED for action=patch: the exact original text to replace. '
-          + 'Should match the text as returned by novel_read_chapter.',
+          + 'Copy it VERBATIM from novel_read_chapter output — do NOT reconstruct it from '
+          + 'memory, since recalled paragraph order and wording are frequently wrong. '
+          + 'MUST be a single-line snippet from WITHIN one paragraph: no newlines, cannot '
+          + 'span paragraphs (to rewrite a whole paragraph use replace + scene + paragraph; '
+          + 'for several consecutive ones use scene + startParagraph/endParagraph).',
       },
       updateWordCount: {
         type: 'boolean',
@@ -85,6 +122,13 @@ function registerReviseChapter(ctx: Context): void {
           blockId: { type: 'string', required: true },
           sceneTitle: { type: 'string' },
           paragraphIndex: { type: 'number' },
+          paragraphRange: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              from: { type: 'number', required: true },
+              to: { type: 'number', required: true },
+            },
+          },
           wordDelta: { type: 'number', required: true },
           revisionId: { type: 'number', required: true },
           documentId: { type: 'string', required: true },
@@ -105,6 +149,10 @@ function registerReviseChapter(ctx: Context): void {
             ...args.blockId === undefined ? {} : { blockId: args.blockId },
             ...args.scene === undefined ? {} : { scene: args.scene },
             ...args.paragraph === undefined ? {} : { paragraph: args.paragraph },
+            ...args.startParagraph === undefined ? {} : { startParagraph: args.startParagraph },
+            ...args.endParagraph === undefined ? {} : { endParagraph: args.endParagraph },
+            ...args.startBlockId === undefined ? {} : { startBlockId: args.startBlockId },
+            ...args.endBlockId === undefined ? {} : { endBlockId: args.endBlockId },
             ...args.match === undefined ? {} : { match: args.match },
           },
           // 默认回写字数：改稿后字数必然变化

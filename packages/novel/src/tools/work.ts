@@ -77,7 +77,6 @@ export function registerWorkTools(ctx: Context): void {
                 baseToken: { type: 'string', required: true },
                 name: { type: 'string', required: true },
                 url: { type: 'string' },
-                owner: { type: 'string' },
                 updatedAt: { type: 'string' },
               },
             },

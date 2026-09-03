@@ -184,13 +184,60 @@ export async function strReplace(
 }
 
 /**
+ * 块定位目标：单个块 id，或**兄弟块区间**。
+ *
+ * 区间来自 lark-cli 的 `--start-block-id` / `--end-block-id`：
+ *   "inclusive start block ID for a block_replace or block_delete sibling
+ *    range; requires --end-block-id and cannot be combined with --block-id"
+ * 端点**都包含**（inclusive）。
+ *
+ * 用途：把连续若干段落一次性替换/删除——例如「把第 2-4 段合并成一段」，
+ * 原本需要 replace 首段 + delete 其余段两次调用，现在一次搞定。
+ *
+ * ⚠️ 区间内**所有**块都会被处理，包括段落之间的引用块、列表、图片等。
+ * 缩窄区间前请确认中间没有想保留的内容。
+ */
+export type BlockTarget = string | BlockRange
+
+/** 兄弟块区间（端点都包含）。 */
+export interface BlockRange {
+  startBlockId: string
+  endBlockId: string
+}
+
+/**
+ * 把块定位目标翻译成 CLI 参数。
+ *
+ * 单块用 `--block-id`，区间用 `--start-block-id` + `--end-block-id`。
+ * CLI 明确禁止两者混用，也不允许只给一端，这里提前校验——比让 CLI
+ * 回一个无细节的 exit code 1 好得多。
+ */
+function blockTargetArgs(target: BlockTarget): string[] {
+  if (typeof target === 'string') {
+    if (target === '') throw new Error('blockId 不能为空。')
+    return ['--block-id', target]
+  }
+  if (target.startBlockId === '' || target.endBlockId === '') {
+    throw new Error('块区间必须同时提供 startBlockId 与 endBlockId（两者皆包含）。')
+  }
+  if (target.startBlockId === target.endBlockId) {
+    // 单块区间等价单块；CLI 上两者应该同义，但既然退化就用更稳的写法
+    return ['--block-id', target.startBlockId]
+  }
+  return ['--start-block-id', target.startBlockId, '--end-block-id', target.endBlockId]
+}
+
+/**
  * 整块替换（段落/场景级改稿）。
+ *
+ * `target` 可为单个 blockId，或 `{startBlockId, endBlockId}` 兄弟块区间
+ * （区间内所有块被整体替换，用于多段合一）。
  *
  * 注意：block_id 在结构变更后会失效，调用前应先 `fetchDoc({ detail: 'with-ids' })` 重新获取。
  */
 export async function blockReplace(
   doc: string,
-  blockId: string,
+  target: BlockTarget,
   content: string,
   options: { docFormat?: 'xml' | 'markdown' } = {},
   signal?: AbortSignal,
@@ -200,7 +247,7 @@ export async function blockReplace(
     const res = await runCli<UpdateEnvelope>(
       ['docs', '+update', '--doc', doc,
         '--command', 'block_replace',
-        '--block-id', blockId,
+        ...blockTargetArgs(target),
         '--doc-format', options.docFormat ?? 'markdown',
         '--content', `@${f.relative}`],
       { cwd: dir.cwd, signal },
@@ -233,19 +280,22 @@ export async function blockInsertAfter(
 /**
  * 删除指定块（清理占位/空段落）。
  *
+ * `target` 可为单个 blockId，或 `{startBlockId, endBlockId}` 兄弟块区间
+ * （区间内所有块一并删除，用于批量清理占位段落）。
+ *
  * 实证（lark-cli 1.0.92，2026-09-02）：`--command block_delete` **不需要**
  * `--content`，直接带 `--block-id` 即可成功（revision 递增，块物理消失）。
  * 注意：block_id 在结构变更后会失效，调用前应重新 `fetchDoc({ detail: 'with-ids' })`。
  */
 export async function blockDelete(
   doc: string,
-  blockId: string,
+  target: BlockTarget,
   signal?: AbortSignal,
 ): Promise<UpdateResult> {
   const res = await runCli<UpdateEnvelope>(
     ['docs', '+update', '--doc', doc,
       '--command', 'block_delete',
-      '--block-id', blockId],
+      ...blockTargetArgs(target)],
     { signal },
   )
   return toUpdateResult(res)

@@ -16,3 +16,5 @@ export * as drive from './apis/drive.ts'
 
 export type { Identity, RunOptions } from './cli.ts'
 export type { CellValue, FieldSchema, FilterJson, RecordFields, SortJson } from './types.ts'
+// docs 以命名空间导出，其类型需另行具名导出，供上层标注块定位参数
+export type { BlockTarget, BlockRange } from './apis/docs.ts'

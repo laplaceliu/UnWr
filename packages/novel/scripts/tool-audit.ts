@@ -27,7 +27,98 @@ import { base } from '@unwr/feishu'
 interface MinimalTool {
   name: string
   parameters: Record<string, unknown>
+  output?: { schema?: OutputSchema }
   execute: (args: Record<string, unknown>, exec: { signal: AbortSignal }) => Promise<unknown>
+}
+
+/** defineTool 的 output.schema 子集（本脚本校验用）。 */
+interface OutputSchema {
+  type?: string
+  properties?: Record<string, OutputSchema>
+  required?: string[]
+  items?: OutputSchema
+  additionalProperties?: boolean
+  enum?: string[]
+}
+
+const kindOf = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v
+
+/**
+ * 递归校验工具返回值是否符合其声明的 output schema。
+ *
+ * 背景（2026-09-03 审查）：工具声明与领域层输出曾在多处脱节——
+ * schema 承诺 number 的字段实际恒为 0（link 单元格误用 num()）、
+ * 承诺存在的 owner 字段从未返回。本函数把「声明 vs 实测」变成
+ * 每次体检的硬断言，脱节即体检失败。
+ */
+function validateAgainstSchema(
+  value: unknown,
+  schema: OutputSchema | undefined,
+  path: string,
+  errors: string[],
+): void {
+  if (schema === undefined) return
+
+  // 枚举校验（仅字符串）
+  if (schema.enum !== undefined && typeof value === 'string' && !schema.enum.includes(value)) {
+    errors.push(`${path}: 值 "${value}" 不在 enum [${schema.enum.join('、')}]`)
+  }
+
+  const type = schema.type ?? (schema.properties !== undefined ? 'object' : undefined)
+  if (type === undefined) return
+
+  switch (type) {
+    case 'object': {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        errors.push(`${path}: 期望 object，实际 ${kindOf(value)}`)
+        return
+      }
+      const record = value as Record<string, unknown>
+      for (const key of schema.required ?? []) {
+        if (record[key] === undefined) errors.push(`${path}: 缺 required 字段 "${key}"`)
+      }
+      for (const [key, sub] of Object.entries(schema.properties ?? {})) {
+        if (record[key] !== undefined) validateAgainstSchema(record[key], sub, `${path}.${key}`, errors)
+      }
+      if (schema.additionalProperties === false && schema.properties !== undefined) {
+        for (const key of Object.keys(record)) {
+          if (schema.properties[key] === undefined) {
+            errors.push(`${path}: 多余字段 "${key}"（additionalProperties=false）`)
+          }
+        }
+      }
+      return
+    }
+    case 'array': {
+      if (!Array.isArray(value)) {
+        errors.push(`${path}: 期望 array，实际 ${kindOf(value)}`)
+        return
+      }
+      if (schema.items !== undefined) {
+        value.forEach((item, i) => validateAgainstSchema(item, schema.items, `${path}[${i}]`, errors))
+      }
+      return
+    }
+    case 'string':
+      if (typeof value !== 'string') errors.push(`${path}: 期望 string，实际 ${kindOf(value)}`)
+      return
+    case 'number':
+      if (typeof value !== 'number') errors.push(`${path}: 期望 number，实际 ${kindOf(value)}`)
+      return
+    case 'boolean':
+      if (typeof value !== 'boolean') errors.push(`${path}: 期望 boolean，实际 ${kindOf(value)}`)
+      return
+    default:
+      return
+  }
+}
+
+/** 校验一个返回值，返回违规清单（空 = 合规）。 */
+function validateOutput(value: unknown, schema: OutputSchema | undefined): string[] {
+  const errors: string[] = []
+  validateAgainstSchema(value, schema, 'output', errors)
+  return errors
 }
 
 function collectTools(): Map<string, MinimalTool> {
@@ -147,7 +238,7 @@ function buildPhases(baseToken: string): Probe[] {
     T('novel_record_character_state', { chapterNo: 1, character: '沈砚', location: '领事馆外巷', physical: '无伤', emotion: '警觉', summary: '夜探未遂，被警司盯上' }, 'memory.state', 'recordId'),
     T('novel_record_event', { chapterNo: 1, name: '领事馆夜探', location: '领事馆后墙', participants: ['沈砚', '林警司'], summary: '试探性接触', isTurningPoint: false }, 'memory.event', 'recordId'),
     T('novel_record_chapter_tension', { chapterNo: 1, score: 3 }, 'memory.tension', 'recordId'),
-    T('novel_upsert_book_summary', { level: '全书', title: '全书梗概（体检写入）', content: '刑警沈砚追查领事馆纵火案。' }, 'memory.book_summary', 'recordId'),
+    T('novel_upsert_book_summary', { action: 'upsert', level: '全书', title: '全书梗概（体检写入）', content: '刑警沈砚追查领事馆纵火案。' }, 'memory.book_summary', 'recordId'),
     // P6 诊断
     T('novel_run_consistency_check', { chapterNo: 1 }, 'consistency.run', 'issues'),
     T('novel_get_semantic_check_pack', { chapterNo: 1 }, 'consistency.semantic_pack', 'characters'),
@@ -198,10 +289,15 @@ async function main(): Promise<void> {
       const ms = Date.now() - started
       const warnings = Array.isArray(out.warnings) ? out.warnings.length : 0
       const keyOk = p.expectKey === undefined || p.expectKey in out
-      results.push({
-        tool: p.tool, label: p.label ?? p.tool, ok: keyOk, ms, warnings,
-        detail: keyOk ? `${ms}ms${warnings > 0 ? `，${warnings} 条 warnings` : ''}` : `缺期望字段 ${p.expectKey}`,
-      })
+      // 输出类型硬断言：返回值必须符合工具声明的 output schema
+      const typeErrors = validateOutput(out, tool.output?.schema)
+      const ok = keyOk && typeErrors.length === 0
+      const detail = !keyOk
+        ? `缺期望字段 ${p.expectKey}`
+        : typeErrors.length > 0
+          ? `输出类型不符：${typeErrors.slice(0, 3).join('；')}`
+          : `${ms}ms${warnings > 0 ? `，${warnings} 条 warnings` : ''}`
+      results.push({ tool: p.tool, label: p.label ?? p.tool, ok, ms, warnings, detail })
     } catch (e) {
       results.push({
         tool: p.tool, label: p.label ?? p.tool, ok: false, ms: Date.now() - started, warnings: 0,

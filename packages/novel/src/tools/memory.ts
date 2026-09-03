@@ -5,6 +5,10 @@
  * 这一组工具是「分层记忆」的写入侧。没有它们，下一章起草时无法回忆起
  * 前面写了什么——分层记忆会退化成空谈。
  *
+ * 其中 novel_upsert_book_summary 是 query/upsert 合一的（与 novel_manage_*
+ * 同款 action 守门员形态）：L2 摘要按**标题**去重，模型不先查就写会堆出
+ * 重复行，所以它必须自带读口。
+ *
  * @module @unwr/novel/tools/memory
  */
 
@@ -12,7 +16,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import {
-  recordCharacterState, recordEvent, updateChapterSummary, upsertBookSummary,
+  queryBookSummaries, recordCharacterState, recordEvent, updateChapterSummary, upsertBookSummary,
 } from '../domain/memory.ts'
 import { resolveWorkToken } from './defaults.ts'
 
@@ -192,29 +196,82 @@ function registerRecordEvent(ctx: Context): void {
 function registerBookSummary(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_upsert_book_summary',
-    description: 'Write or update a volume-level or book-level summary. '
-      + 'These are the compressed long-term memory: they keep the context cost flat '
-      + 'as the story grows to hundreds of chapters.',
+    description: 'Query or write the volume-level / book-level summaries — the compressed '
+      + 'long-term memory that keeps context cost flat as the story grows. '
+      + 'action="query" lists existing summaries (no arguments needed beyond an optional '
+      + 'level filter). action="upsert" writes one. '
+      + 'NOTE: matching is by exact title — query first and reuse the existing title, '
+      + 'otherwise a slightly different title creates a duplicate summary row.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
-      level: { type: 'string', enum: ['卷', '全书'], required: true, description: 'Summary level' },
-      title: { type: 'string', required: true, description: 'Summary title, e.g. "第一卷 旧剑"' },
-      content: { type: 'string', required: true, description: 'Summary text' },
-      fromChapter: { type: 'number', description: 'First chapter covered.' },
-      toChapter: { type: 'number', description: 'Last chapter covered.' },
+      // action 必填：与 novel_manage_* 同款（tool-schema.spec.ts 的不变量：
+      // 凡 enum 含 query 的工具，编译后 required 必须恰好是 ['action']，
+      // 否则 query 调用会在 DSH 校验阶段被拦死，永远到不了 execute）。
+      action: {
+        type: 'string', enum: ['query', 'upsert'], required: true,
+        description: 'query = list existing volume/book summaries; upsert = write one.',
+      },
+      // 以下字段**不加 schema required**：query 不需要它们，schema 级 required
+      // 会在校验阶段把 query 调用拦死。upsert 缺失由 execute 的动作级守卫报
+      // 更明确的错误。与 novel_manage_* 同款形态（entity.ts 已踩过同一个坑）。
+      // 实机 2026-09-03：模型按 manage_* 惯例传 {action:"query", level:"卷"}，
+      // 被报 missing required property "title"; missing required property "content"。
+      level: {
+        type: 'string', enum: ['卷', '全书'],
+        description: 'Summary level. REQUIRED for upsert; optional filter for query.',
+      },
+      title: {
+        type: 'string',
+        description: 'Summary title, e.g. "第一卷 旧剑". REQUIRED for upsert; '
+          + 'for query it filters by substring in title or content.',
+      },
+      content: { type: 'string', description: 'Summary text. REQUIRED for upsert.' },
+      fromChapter: { type: 'number', description: 'First chapter covered (upsert).' },
+      toChapter: { type: 'number', description: 'Last chapter covered (upsert).' },
     },
     output: {
       schema: {
         type: 'object', additionalProperties: false,
         properties: {
-          recordId: { type: 'string', required: true },
-          updated: { type: 'boolean', required: true },
+          action: { type: 'string', required: true },
+          total: { type: 'number', required: true },
+          items: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                level: { type: 'string', required: true },
+                title: { type: 'string', required: true },
+                content: { type: 'string', required: true },
+                fromChapter: { type: 'number' },
+                toChapter: { type: 'number' },
+              },
+            },
+          },
+          recordId: { type: 'string' },
+          updated: { type: 'boolean' },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      return upsertBookSummary(
+      if (args.action === 'query') {
+        const items = await queryBookSummaries(resolveWorkToken(args), {
+          ...args.level === undefined ? {} : { level: args.level },
+          ...args.title === undefined ? {} : { keyword: args.title },
+        }, exec.signal)
+        return { action: 'query', total: items.length, items }
+      }
+      if (args.level !== '卷' && args.level !== '全书') {
+        throw new Error('upsert 必须提供 level（卷 / 全书）。')
+      }
+      if (args.title === undefined || args.title === '') {
+        throw new Error('upsert 必须提供 title（摘要标题）。')
+      }
+      if (args.content === undefined || args.content === '') {
+        throw new Error('upsert 必须提供 content（摘要正文）。')
+      }
+      const r = await upsertBookSummary(
         resolveWorkToken(args),
         args.level,
         args.title,
@@ -225,6 +282,10 @@ function registerBookSummary(ctx: Context): void {
         },
         exec.signal,
       )
+      return {
+        action: 'upsert', total: 1, items: [],
+        recordId: r.recordId, updated: r.updated,
+      }
     },
   }))
 }

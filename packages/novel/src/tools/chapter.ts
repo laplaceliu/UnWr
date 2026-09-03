@@ -256,7 +256,7 @@ async function base_listChapter(
   }
 }
 
-/** 回写章节字数。 */
+/** 回写章节字数（不动状态：续写不该把 修订/定稿 降级回 草稿）。 */
 async function base_updateWords(
   baseToken: string,
   recordId: string,
@@ -266,7 +266,7 @@ async function base_updateWords(
   await base.updateRecords(
     baseToken,
     TABLE.CHAPTER,
-    { [recordId]: { [CHAPTER_F.WORDS]: words, [CHAPTER_F.STATUS]: [CHAPTER_STATUS.DRAFT] } },
+    { [recordId]: { [CHAPTER_F.WORDS]: words } },
     signal,
   )
 }

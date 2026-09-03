@@ -20,7 +20,7 @@
  * @module @unwr/novel/domain/revision
  */
 
-import { docs } from '@unwr/feishu'
+import { docs, type BlockTarget } from '@unwr/feishu'
 import { findChapterRecord } from './chapter.ts'
 import { extractDocToken } from '../context/builder.ts'
 import { countWords } from './chapter.ts'
@@ -40,6 +40,21 @@ export interface ReviseTarget {
    * 模型无需复制原文。paragraph=0 表示「场景标题块本身」。
    */
   paragraph?: number
+  /**
+   * 区间起点段序号（1-based，含）。与 endParagraph 搭配，
+   * 一次替换/删除连续多段——「把第 2-4 段合并成一段」这类需求
+   * 原本要 replace + 多次 delete，现在一次调用即可。
+   */
+  startParagraph?: number
+  /** 区间终点段序号（1-based，含）。必须与 startParagraph 同时给出。 */
+  endParagraph?: number
+  /**
+   * 区间起点块 id（含）。lark-cli 的 `--start-block-id`，**必须**与
+   * endBlockId 配对，且不能与 blockId 混用。
+   */
+  startBlockId?: string
+  /** 区间终点块 id（含）。lark-cli 的 `--end-block-id`。 */
+  endBlockId?: string
   /** 要替换的原文片段（patch 模式必填；replace 模式下用于校验） */
   match?: string
 }
@@ -64,13 +79,15 @@ export interface ReviseParams {
 /** 改稿结果。 */
 export interface ReviseResult {
   /** 实际采用的定位方式 */
-  locatedBy: 'blockId' | 'scene' | 'paragraph' | 'match'
-  /** 命中的块 id */
+  locatedBy: 'blockId' | 'scene' | 'paragraph' | 'range' | 'match'
+  /** 命中的块 id（区间定位时为**起始**块 id） */
   blockId: string
   /** 场景标题（若按场景定位） */
   sceneTitle?: string
-  /** 命中的段落在场景内的序号（若按段落定位） */
+  /** 命中的段落在场景内的序号（若按单段落定位） */
   paragraphIndex?: number
+  /** 命中的段落区间（若按区间定位，两端都包含） */
+  paragraphRange?: { from: number; to: number }
   /** 变更前后的字数差 */
   wordDelta: number
   /** 文档新版本号 */
@@ -285,7 +302,8 @@ export function enrichPatchError(e: Error): Error {
     `patch 失败：${detail}`
     + '\n→ patch 对匹配文本过敏感（任何空白/标点差异都拒改），与其继续重试，'
     + '不如先 novel_list_scenes 取场景列表，然后改用 action=replace + scene + paragraph'
-    + '（结构化定位，不依赖 match 逐字符匹配）。'
+    + '（结构化定位，不依赖 match 逐字符匹配）；'
+    + '要一次改连续多段则用 scene + startParagraph/endParagraph。'
     + '\n→ 若仍要继续 patch：请先 novel_read_chapter 拿到当前段落原文，逐字符比对 '
     + '（特别注意全角/半角、空格、换行符、引号），再用新 match 重试。',
     { cause: e },
@@ -330,6 +348,90 @@ export async function reviseChapter(
     ].join('')
     throw new Error(hint)
   }
+  // ★ 跨块守卫（实机踩坑 2026-09-03，本轮报错的直接原因）：
+  //   lark-cli 对 str_replace 的 --pattern 的契约是
+  //     "simple inline text matched by str_replace; use block_replace for
+  //      paragraphs, multiline content, or multiple blocks"
+  //   即 **只匹配块内连续文本**，跨段落/多行一律要走 block_replace。
+  //
+  //   而下面的失配预检比的是 **markdown 渲染**（段落间恰好是 \n\n），
+  //   于是跨段落的 match 能"通过"预检 → 到 CLI 侧必然匹配不上 → 只回
+  //   一个毫无细节的 "cli failed with exit code 1"。预检给了虚假信心，
+  //   模型会以为 match 没问题而反复重试（实测重试 7 次都是同一个错）。
+  //
+  //   放在 I/O 之前（resolveChapterDoc + currentWords = 3 次 CLI 往返
+  //   都在后面），零网络开销拦下并给出可执行的下一步。
+  if (params.action === 'patch' && params.target.match !== undefined) {
+    const matchLf = params.target.match.replace(/\r\n/g, '\n')
+    if (matchLf.includes('\n')) {
+      const acrossParagraphs = matchLf.includes('\n\n')
+      throw new Error(
+        `match ${acrossParagraphs ? '跨段落（含空行）' : '跨行（含换行符）'}，`
+        + '但 str_replace 的 --pattern 只匹配**块内连续文本**'
+        + '（lark-cli：use block_replace for paragraphs, multiline content, or multiple blocks）。'
+        + '这类 match 在 markdown 预检里看起来存在，实际永远匹配不上——'
+        + '所以**不要**再去逐字符校对重试，换定位方式才是正解。'
+        + '\n→ 只改一句：把 match 缩短到单个段落内的连续片段，多次 patch 即可。'
+        + '\n→ 改整段：改用 action=replace + scene + paragraph（结构化定位，推荐）。'
+        + '\n→ 多段合一：用 action=replace + scene + startParagraph/endParagraph'
+        + '（一次替换连续多段，两端都包含）。'
+        + '\n→ 后两条都要 scene 名，不确定就先 novel_list_scenes。'
+        + '（本条守卫先于任何 I/O 触发，因此这里列不出场景列表。）'
+        + '\n→ 无论走哪条：match 必须从 novel_read_chapter 的输出**逐字复制**，'
+        + '不要凭记忆拼——凭记忆拼出来的段落顺序常常是错的。',
+      )
+    }
+  }
+
+  // ★ 区间参数守卫（lark-cli 契约：--start-block-id requires --end-block-id
+  //   and cannot be combined with --block-id）。同样是零 I/O 开销拦下，
+  //   避免让 CLI 回一个无细节的 exit code 1。
+  {
+    const t = params.target
+    const hasStartBlock = t.startBlockId !== undefined && t.startBlockId !== ''
+    const hasEndBlock = t.endBlockId !== undefined && t.endBlockId !== ''
+    if (hasStartBlock !== hasEndBlock) {
+      throw new Error(
+        'startBlockId 与 endBlockId 必须成对给出（区间两端都包含）。'
+        + `当前只提供了 ${hasStartBlock ? 'startBlockId' : 'endBlockId'}。`
+        + '若只改单个块，请用 blockId（或 scene + paragraph）。',
+      )
+    }
+    if (hasStartBlock && t.blockId !== undefined && t.blockId !== '') {
+      throw new Error('blockId 与 startBlockId/endBlockId 不能同时使用（lark-cli 禁止混用）。请二选一。')
+    }
+
+    const hasStartPara = t.startParagraph !== undefined
+    const hasEndPara = t.endParagraph !== undefined
+    if (hasStartPara !== hasEndPara) {
+      throw new Error(
+        'startParagraph 与 endParagraph 必须成对给出（区间两端都包含）。'
+        + `当前只提供了 ${hasStartPara ? 'startParagraph' : 'endParagraph'}。`
+        + '若只改单段，请用 paragraph。',
+      )
+    }
+    if (hasStartPara && t.paragraph !== undefined) {
+      throw new Error('paragraph 与 startParagraph/endParagraph 语义冲突，请二选一。')
+    }
+    if (t.startParagraph !== undefined && t.endParagraph !== undefined) {
+      const from = t.startParagraph
+      const to = t.endParagraph
+      if (from > to) {
+        throw new Error(`段落区间非法：startParagraph(${from}) 大于 endParagraph(${to})。`)
+      }
+      if ((t.scene === undefined || t.scene === '') && !hasStartBlock) {
+        throw new Error('startParagraph/endParagraph 需要配合 scene 使用（段落序号是场景内序号）。')
+      }
+    }
+    // block_insert_after 的 CLI 语义是"在某个块之后插入"，没有区间版本
+    if (params.action === 'expand' && (hasStartBlock || hasStartPara)) {
+      throw new Error(
+        'expand 不支持区间定位——它是在**单个**块之后插入。'
+        + '请改用 blockId 或 scene + paragraph 指定插入点；'
+        + '若想一次插入多段内容，把多段文本都放进 content 即可。',
+      )
+    }
+  }
 
   const { base } = await import('@unwr/feishu')
   const { CHAPTER_F, CHAPTER_STATUS, TABLE } = await import('@unwr/schema')
@@ -342,6 +444,8 @@ export async function reviseChapter(
 
   let locatedBy: ReviseResult['locatedBy']
   let blockId: string
+  /** 实际下发给 CLI 的定位目标：单块 id 或兄弟块区间 */
+  let blockTarget: BlockTarget
   let sceneTitle: string | undefined
   let res: { revision_id: number; url: string; result: string; warnings?: string[] }
 
@@ -370,6 +474,7 @@ export async function reviseChapter(
     }
     locatedBy = 'match'
     blockId = ''
+    blockTarget = ''
     try {
       res = await docs.strReplace(docToken, params.target.match, params.content as string, signal)
     } catch (e) {
@@ -378,10 +483,57 @@ export async function reviseChapter(
     warnings.push(...res.warnings ?? [])
   } else {
     // replace / expand / delete 需要定位到块。优先级：
-    //   blockId（显式）> scene+paragraph（结构化，**推荐**）> scene（整场景）
+    //   blockId / startBlockId+endBlockId（显式）
+    //   > scene+startParagraph..endParagraph（结构化区间）
+    //   > scene+paragraph（结构化单段，**推荐**）
+    //   > scene（整场景）
     if (params.target.blockId !== undefined && params.target.blockId !== '') {
       locatedBy = 'blockId'
       blockId = params.target.blockId
+      blockTarget = blockId
+    } else if (
+      params.target.startBlockId !== undefined && params.target.startBlockId !== ''
+      && params.target.endBlockId !== undefined && params.target.endBlockId !== ''
+    ) {
+      locatedBy = 'range'
+      blockId = params.target.startBlockId
+      blockTarget = {
+        startBlockId: params.target.startBlockId,
+        endBlockId: params.target.endBlockId,
+      }
+    } else if (
+      params.target.scene !== undefined && params.target.scene !== ''
+      && params.target.startParagraph !== undefined
+      && params.target.endParagraph !== undefined
+    ) {
+      // 结构化段落区间：把「第 M-N 段」翻译成块区间（两端都包含）
+      const sp = await getSceneParagraphs(docToken, params.target.scene, signal)
+      const from = params.target.startParagraph
+      const to = params.target.endParagraph
+      if (from < 1) {
+        throw new Error(`段落区间序号从 1 开始（收到 startParagraph=${from}）。`)
+      }
+      const start = sp.paragraphs.find((p) => p.index === from)
+      const end = sp.paragraphs.find((p) => p.index === to)
+      if (start === undefined || end === undefined) {
+        const bad = start === undefined ? from : to
+        throw new LocateError(
+          `场景「${sp.sceneTitle}」共 ${sp.paragraphs.length} 个段落，没有第 ${bad} 段。`,
+          sp.paragraphs.map((p) => `${p.index}. ${p.text.slice(0, 40)}`),
+        )
+      }
+      locatedBy = 'range'
+      blockId = start.blockId
+      blockTarget = { startBlockId: start.blockId, endBlockId: end.blockId }
+      sceneTitle = sp.sceneTitle
+      // 区间替换会吃掉中间一切：段落之间的引用块/列表/图片也一并处理
+      if (to > from + 1) {
+        warnings.push(
+          `段落区间 ${from}-${to} 内共 ${to - from + 1} 段，`
+          + '中间的非段落块（引用、列表、图片等）也会被一并替换。'
+          + '若只想合并纯文本段落，请确认区间内没有其他内容块。',
+        )
+      }
     } else if (
       params.target.scene !== undefined && params.target.scene !== ''
       && params.target.paragraph !== undefined
@@ -397,11 +549,13 @@ export async function reviseChapter(
       }
       locatedBy = 'paragraph'
       blockId = para.blockId
+      blockTarget = para.blockId
       sceneTitle = sp.sceneTitle
     } else if (params.target.scene !== undefined && params.target.scene !== '') {
       const found = await locateByScene(docToken, params.target.scene, signal)
       locatedBy = 'scene'
       blockId = found.blockId
+      blockTarget = found.blockId
       sceneTitle = found.sceneTitle
     } else if (params.target.match !== undefined && params.target.match !== '') {
       // 无 blockId / scene 时，退化到 match：但不直接替换，
@@ -415,14 +569,22 @@ export async function reviseChapter(
     }
 
     if (params.action === 'replace') {
-      res = await docs.blockReplace(docToken, blockId, params.content as string, {}, signal)
+      res = await docs.blockReplace(docToken, blockTarget, params.content as string, {}, signal)
     } else if (params.action === 'expand') {
+      // 区间已在上游守卫中拒绝，这里 blockTarget 必为单块 id
       res = await docs.blockInsertAfter(docToken, blockId, params.content as string, signal)
     } else {
-      // delete：物理删除整块（占位段落/空段清理）。
+      // delete：物理删除整块（占位段落/空段清理），区间版可批量删除。
       // CLI 实证无需 --content；块删除后 block_id 失效，结果里提示重新定位。
-      res = await docs.blockDelete(docToken, blockId, signal)
+      res = await docs.blockDelete(docToken, blockTarget, signal)
       warnings.push('块已删除，其 block_id 已失效；继续操作同区域请重新 novel_list_scenes 获取结构。')
+    }
+    if (typeof blockTarget !== 'string') {
+      // 区间操作会重建这些块，旧 id 全部失效
+      warnings.push(
+        '区间操作已重建该范围的块结构，区间内旧 block_id 全部失效；'
+        + '后续操作请重新 novel_list_scenes 获取结构。',
+      )
     }
     warnings.push(...res.warnings ?? [])
   }
@@ -455,6 +617,11 @@ export async function reviseChapter(
     blockId,
     ...sceneTitle === undefined ? {} : { sceneTitle },
     ...params.target.paragraph === undefined ? {} : { paragraphIndex: params.target.paragraph },
+    ...locatedBy === 'range'
+      && params.target.startParagraph !== undefined
+      && params.target.endParagraph !== undefined
+      ? { paragraphRange: { from: params.target.startParagraph, to: params.target.endParagraph } }
+      : {},
     wordDelta,
     revisionId: res.revision_id,
     documentId: docToken,

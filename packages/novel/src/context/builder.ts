@@ -165,14 +165,16 @@ export async function buildContext(
       ],
       limit: 200,
     }, signal)),
-    // L3 人物当前状态：取每人在 chapterNo 之前的最新一条
-    safeRows(() => base.listRecords(baseToken, TABLE.CHARACTER_STATE, {
+    // L3 人物当前状态：取每人在 chapterNo 之前的最新一条。
+    // 实测坑（2026-09-03 审查抓到）：旧代码 listRecords({limit:500}) 超 CLI
+    // 上限 200 直接报 invalid arguments，被 safeRows 静默吞掉 →
+    // build_context 的 characterStates 恒为空。改 listAllRecords 分页。
+    safeRows(() => base.listAllRecords(baseToken, TABLE.CHARACTER_STATE, {
       fieldIds: [
         CHARACTER_STATE_F.CHARACTER, CHARACTER_STATE_F.SUMMARY,
         CHARACTER_STATE_F.LOCATION, CHARACTER_STATE_F.PHYSICAL,
         CHARACTER_STATE_F.EMOTION, CHARACTER_STATE_F.BELONGINGS,
       ],
-      limit: 500,
     }, signal)),
     safeRows(() => base.listAllRecords(baseToken, TABLE.CHARACTER, {
       fieldIds: [CHARACTER_F.NAME],

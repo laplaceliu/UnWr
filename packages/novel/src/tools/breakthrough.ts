@@ -16,8 +16,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  CHARACTER_F, CHAPTER_F, FORESHADOW_F, PLOTLINE_F, RELATION_F, SETTING_F,
-  TABLE,
+  CHARACTER_F, CHAPTER_F, FORESHADOW_F, FORESHADOW_STATUS, PLOTLINE_F, RELATION_F, SETTING_F,
+  TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { base } from '@unwr/feishu'
 import { resolveWorkToken } from './defaults.ts'
@@ -26,7 +26,7 @@ import { resolveWorkToken } from './defaults.ts'
 /* 域层封装（与 domain/memory.ts 的 buildContext 共享底子）                */
 /* ------------------------------------------------------------------ */
 
-/** 该章已有大纲摘要。 */
+/** 该章已有大纲摘要。volume = 卷序（VOLUME.ORDER），未关联卷时 0。 */
 interface ChapterOutline {
   chapterNo: number
   title: string
@@ -34,42 +34,93 @@ interface ChapterOutline {
   volume: number
 }
 
-async function loadOutlineFor(baseToken: string, chapterNo: number, signal?: AbortSignal): Promise<ChapterOutline | undefined> {
-  const rows = base.matrixToObjects(
-    await base.listAllRecords(baseToken, TABLE.CHAPTER, {
-      fieldIds: [CHAPTER_F.NO, CHAPTER_F.TITLE, CHAPTER_F.OUTLINE, CHAPTER_F.VOLUME],
+/**
+ * 章节/卷的 id 映射，一次加载多处复用。
+ *
+ * 为什么必须先建映射（实机审查 2026-09-03）：CHAPTER.VOLUME、
+ * PLOTLINE.CHAPTERS、FORESHADOW.PLANT_CHAPTER 全是 **link 字段**，
+ * 读回形态是 [{id}]——直接 Number()/num() 恒为 NaN/0，旧代码的
+ * volume、plantedChapter 因此永远是 0，剧情线关联判断恒 false。
+ * 正确范式见 domain/consistency.ts 的 linkFirstNo + recordIdToChapterNo。
+ */
+interface ChapterMaps {
+  chapters: { no: number; title: string; outline: string; summary: string; volumeId?: string }[]
+  recordIdToChapterNo: Map<string, number>
+  volumeIdToOrder: Map<string, number>
+}
+
+/** 从 link 单元格取第一个 record id（兼容 [{id}] 与裸字符串两种形态）。 */
+function firstLinkId(v: unknown): string | undefined {
+  const first = Array.isArray(v) ? v[0] : v
+  if (first === undefined || first === null) return undefined
+  if (typeof first === 'object' && 'id' in first) return String((first as { id: unknown }).id)
+  return typeof first === 'string' && first !== '' ? first : undefined
+}
+
+async function loadChapterMaps(
+  baseToken: string,
+  signal?: AbortSignal,
+): Promise<ChapterMaps> {
+  const [chapterRows, volumeRows] = await Promise.all([
+    base.listAllRecords(baseToken, TABLE.CHAPTER, {
+      fieldIds: [CHAPTER_F.NO, CHAPTER_F.TITLE, CHAPTER_F.OUTLINE, CHAPTER_F.SUMMARY, CHAPTER_F.VOLUME],
     }, signal),
-  )
-  const row = rows.find((r) => Number(r[CHAPTER_F.NO]) === chapterNo)
+    base.listAllRecords(baseToken, TABLE.VOLUME, {
+      fieldIds: [VOLUME_F.ORDER],
+    }, signal),
+  ])
+  const recordIdToChapterNo = new Map<string, number>()
+  const chapters: ChapterMaps['chapters'] = []
+  for (const r of base.matrixToObjects(chapterRows)) {
+    const rid = str(r['__recordId'])
+    const no = num(r[CHAPTER_F.NO])
+    if (rid !== '') recordIdToChapterNo.set(rid, no)
+    chapters.push({
+      no,
+      title: str(r[CHAPTER_F.TITLE]),
+      outline: str(r[CHAPTER_F.OUTLINE]),
+      summary: str(r[CHAPTER_F.SUMMARY]),
+      ...firstLinkId(r[CHAPTER_F.VOLUME]) === undefined ? {} : { volumeId: firstLinkId(r[CHAPTER_F.VOLUME]) },
+    })
+  }
+  const volumeIdToOrder = new Map<string, number>()
+  for (const v of base.matrixToObjects(volumeRows)) {
+    const rid = str(v['__recordId'])
+    if (rid !== '') volumeIdToOrder.set(rid, num(v[VOLUME_F.ORDER]))
+  }
+  return { chapters, recordIdToChapterNo, volumeIdToOrder }
+}
+
+function loadOutlineFor(maps: ChapterMaps, chapterNo: number): ChapterOutline | undefined {
+  const row = maps.chapters.find((c) => c.no === chapterNo)
   if (row === undefined) return undefined
   return {
-    chapterNo: Number(row[CHAPTER_F.NO] ?? chapterNo),
-    title: str(row[CHAPTER_F.TITLE]),
-    outline: str(row[CHAPTER_F.OUTLINE]),
-    volume: num(row[CHAPTER_F.VOLUME]),
+    chapterNo: row.no,
+    title: row.title,
+    outline: row.outline,
+    volume: row.volumeId !== undefined ? maps.volumeIdToOrder.get(row.volumeId) ?? 0 : 0,
   }
 }
 
 /** 取最近 N 章的梗概（CHAPTER_F.SUMMARY）作为「剧情惯性」参考。 */
-async function loadRecentSummaries(baseToken: string, before: number, count: number, signal?: AbortSignal): Promise<Array<{ chapterNo: number, title: string, summary: string }>> {
-  const rows = base.matrixToObjects(
-    await base.listAllRecords(baseToken, TABLE.CHAPTER, {
-      fieldIds: [CHAPTER_F.NO, CHAPTER_F.TITLE, CHAPTER_F.SUMMARY],
-    }, signal),
-  )
-  return rows
-    .filter((r) => num(r[CHAPTER_F.NO]) < before && str(r[CHAPTER_F.SUMMARY]) !== '')
-    .sort((a, b) => num(b[CHAPTER_F.NO]) - num(a[CHAPTER_F.NO]))
+function loadRecentSummaries(
+  maps: ChapterMaps,
+  before: number,
+  count: number,
+): Array<{ chapterNo: number, title: string, summary: string }> {
+  return maps.chapters
+    .filter((c) => c.no < before && c.summary !== '')
+    .sort((a, b) => b.no - a.no)
     .slice(0, count)
-    .map((r) => ({
-      chapterNo: num(r[CHAPTER_F.NO]),
-      title: str(r[CHAPTER_F.TITLE]),
-      summary: str(r[CHAPTER_F.SUMMARY]),
-    }))
+    .map((c) => ({ chapterNo: c.no, title: c.title, summary: c.summary }))
 }
 
-/** 待回收伏笔（FORESHADOW.STATUS == "未回收"），按距离目标章节的距离升序。 */
-async function loadPendingForeshadows(baseToken: string, chapterNo: number, signal?: AbortSignal): Promise<Array<{ title: string, plantedChapter: number, description: string }>> {
+/** 待回收伏笔（状态=已埋设），按埋设章节升序。 */
+async function loadPendingForeshadows(
+  baseToken: string,
+  maps: ChapterMaps,
+  signal?: AbortSignal,
+): Promise<Array<{ title: string, plantedChapter: number, description: string }>> {
   const rows = base.matrixToObjects(
     await base.listAllRecords(baseToken, TABLE.FORESHADOW, {
       fieldIds: [FORESHADOW_F.CONTENT, FORESHADOW_F.STATUS, FORESHADOW_F.PLANT_CHAPTER, FORESHADOW_F.NOTE],
@@ -77,13 +128,16 @@ async function loadPendingForeshadows(baseToken: string, chapterNo: number, sign
   )
   return rows
     .filter((r) => {
-      const status = r[FORESHADOW_F.STATUS]
-      // 单选 select 在 listRecords 返回中是字符串；create/updateRecords 写入数组。
-      return status === '未回收' || (Array.isArray(status) && status[0] === '未回收')
+      const s = Array.isArray(r[FORESHADOW_F.STATUS]) ? (r[FORESHADOW_F.STATUS] as unknown[])[0] : r[FORESHADOW_F.STATUS]
+      // 实测坑：状态枚举是 已埋设/已回收/已作废——「未回收」不是合法选项，
+      // 旧代码按它过滤导致待回收列表恒空。
+      return s === FORESHADOW_STATUS.PLANTED
     })
     .map((r) => ({
       title: str(r[FORESHADOW_F.CONTENT]),
-      plantedChapter: num(r[FORESHADOW_F.PLANT_CHAPTER]),
+      plantedChapter: firstLinkId(r[FORESHADOW_F.PLANT_CHAPTER]) !== undefined
+        ? maps.recordIdToChapterNo.get(firstLinkId(r[FORESHADOW_F.PLANT_CHAPTER]) as string) ?? 0
+        : 0,
       description: str(r[FORESHADOW_F.NOTE]),
     }))
     .sort((a, b) => a.plantedChapter - b.plantedChapter)
@@ -124,8 +178,13 @@ async function loadActiveRelations(baseToken: string, characterNames: string[], 
     .filter((rel) => characterNames.includes(rel.a) || characterNames.includes(rel.b))
 }
 
-/** 该章的相关剧情线（PLOTLINE.CHAPTERS 含本章）。 */
-async function loadActivePlotlines(baseToken: string, chapterNo: number, signal?: AbortSignal): Promise<Array<{ name: string, status: string, description: string }>> {
+/** 该章的相关剧情线（PLOTLINE.CHAPTERS link 含本章）。 */
+async function loadActivePlotlines(
+  baseToken: string,
+  maps: ChapterMaps,
+  chapterNo: number,
+  signal?: AbortSignal,
+): Promise<Array<{ name: string, status: string, description: string }>> {
   const rows = base.matrixToObjects(
     await base.listAllRecords(baseToken, TABLE.PLOTLINE, {
       fieldIds: [PLOTLINE_F.NAME, PLOTLINE_F.STATUS, PLOTLINE_F.DESCRIPTION],
@@ -135,7 +194,14 @@ async function loadActivePlotlines(baseToken: string, chapterNo: number, signal?
     .filter((r) => {
       const link = r[PLOTLINE_F.CHAPTERS]
       if (!Array.isArray(link)) return false
-      return link.some((c) => Number(c) === chapterNo)
+      // link 读回是 [{id}]（record id），必须经映射转章节号——
+      // 旧代码 Number(c) === chapterNo 恒 false
+      return link.some((c) => {
+        const id = typeof c === 'object' && c !== null && 'id' in c
+          ? String((c as { id: unknown }).id)
+          : String(c)
+        return maps.recordIdToChapterNo.get(id) === chapterNo
+      })
     })
     .map((r) => ({
       name: str(r[PLOTLINE_F.NAME]),
@@ -343,12 +409,15 @@ function registerBreakthrough(ctx: Context): void {
       const chapterNo = args.chapterNo
       const recentWindow = args.recentWindow ?? 5
 
-      // 并行拉取：互不依赖
-      const [outline, recent, foreshadows, plotlines] = await Promise.all([
-        loadOutlineFor(baseToken, chapterNo, exec.signal),
-        loadRecentSummaries(baseToken, chapterNo, recentWindow, exec.signal),
-        loadPendingForeshadows(baseToken, chapterNo, exec.signal),
-        loadActivePlotlines(baseToken, chapterNo, exec.signal),
+      // 第一批：章节/卷映射（互不依赖）
+      const maps = await loadChapterMaps(baseToken, exec.signal)
+      const outline = loadOutlineFor(maps, chapterNo)
+      const recent = loadRecentSummaries(maps, chapterNo, recentWindow)
+
+      // 第二批并行：待回收伏笔 / 相关剧情线（依赖映射）+ 无关的独立查询
+      const [foreshadows, plotlines] = await Promise.all([
+        loadPendingForeshadows(baseToken, maps, exec.signal),
+        loadActivePlotlines(baseToken, maps, chapterNo, exec.signal),
       ])
 
       // 人物抽取：用户显式 > 自动抽取（按 recent 摘要）

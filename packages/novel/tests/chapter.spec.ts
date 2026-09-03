@@ -255,6 +255,7 @@ describe.skipIf(!HAS_BASE)('端到端：真实飞书闭环', () => {
 
   it('memory → 写入卷级摘要', async () => {
     const r = await run('novel_upsert_book_summary', {
+      action: 'upsert',
       level: '卷',
       title: `[测试] 卷-${chapterNo}`,
       content: '测试卷摘要',

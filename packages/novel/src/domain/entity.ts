@@ -1020,6 +1020,14 @@ export async function queryRelations(
     return first !== undefined ? (idToName.get(first) ?? first) : ''
   }
 
+  // START_CHAPTER 也是 link（→ 章节表）：读回只有 record id，
+  // 必须映射回章节号——旧代码 num() 作用在 link 单元格上恒 0。
+  const chapterNoByRecordId = new Map<string, number>(
+    base.matrixToObjects(
+      await base.listAllRecords(baseToken, TABLE.CHAPTER, { fieldIds: [CHAPTER_F.NO] }, signal),
+    ).map((r) => [str(r['__recordId']), num(r[CHAPTER_F.NO])]),
+  )
+
   return rows
     .map((r) => ({
       a: nameOf(r[RELATION_F.A]),
@@ -1027,7 +1035,9 @@ export async function queryRelations(
       type: firstStr(r[RELATION_F.TYPE]),
       status: firstStr(r[RELATION_F.STATUS]),
       description: str(r[RELATION_F.DESCRIPTION]),
-      startChapter: num(r[RELATION_F.START_CHAPTER]),
+      startChapter: linkIds(r[RELATION_F.START_CHAPTER])[0] !== undefined
+        ? chapterNoByRecordId.get(linkIds(r[RELATION_F.START_CHAPTER])[0] as string) ?? 0
+        : 0,
     }))
     .filter((rel) => rel.a !== '' && rel.b !== '')
     .filter((rel) => options.character === undefined || rel.a === options.character || rel.b === options.character)

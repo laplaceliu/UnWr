@@ -307,6 +307,81 @@ export async function recordEvent(
   }
 }
 
+/** 卷级/全书摘要查询的过滤条件。 */
+export interface BookSummaryQuery {
+  /** 只看某一层级；省略则返回 L2 全部（卷 + 全书，与 builder.ts 远期层同口径） */
+  level?: MemoryLevel
+  /** 标题/正文子串过滤 */
+  keyword?: string
+  limit?: number
+}
+
+/** 卷级/全书摘要条目。 */
+export interface BookSummaryEntry {
+  level: string
+  title: string
+  content: string
+  /** 覆盖起始章节；未填时省略 */
+  fromChapter?: number
+  /** 覆盖结束章节；未填时省略 */
+  toChapter?: number
+}
+
+/** 单元格 → 字符串（undefined/null → ''）。 */
+const str = (v: unknown): string =>
+  typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v)
+
+/** select 字段可能是单值也可能是数组，统一取首个。 */
+const firstStr = (v: unknown): string => (Array.isArray(v) ? str(v[0]) : str(v))
+
+/** 单元格 → 数字；非数字返回 undefined（用于可选数值字段）。 */
+const numOrUndef = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? v : undefined
+
+/**
+ * 查询卷级 / 全书摘要（分层记忆 L2 的**读取侧**）。
+ *
+ * 为什么必须有：upsert 的去重键是**标题**，模型不先查就写，会因标题
+ * 略有出入（"第一卷 旧剑" vs "第一卷 旧剑（修订）"）堆出重复摘要行。
+ * 实机踩坑 2026-09-03：模型想读已有卷摘要，按 novel_manage_* 的惯例
+ * 传 `{action:"query", level:"卷"}`，而本工具彼时是纯写入工具且
+ * title/content 为 schema 级 required → 校验阶段直接
+ * `missing required property "title"; missing required property "content"`。
+ */
+export async function queryBookSummaries(
+  baseToken: string,
+  options: BookSummaryQuery = {},
+  signal?: AbortSignal,
+): Promise<BookSummaryEntry[]> {
+  const rows = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.MEMORY, {
+      fieldIds: [
+        MEMORY_F.TITLE, MEMORY_F.LEVEL, MEMORY_F.CONTENT,
+        MEMORY_F.FROM_CHAPTER, MEMORY_F.TO_CHAPTER,
+      ],
+      limit: Math.min(options.limit ?? 200, 200),
+    }, signal),
+  )
+
+  const isL2 = (lvl: string): boolean =>
+    lvl === MEMORY_LEVEL.VOLUME || lvl === MEMORY_LEVEL.BOOK
+
+  return rows
+    .map((r) => ({
+      level: firstStr(r[MEMORY_F.LEVEL]),
+      title: str(r[MEMORY_F.TITLE]),
+      content: str(r[MEMORY_F.CONTENT]),
+      fromChapter: numOrUndef(r[MEMORY_F.FROM_CHAPTER]),
+      toChapter: numOrUndef(r[MEMORY_F.TO_CHAPTER]),
+    }))
+    .filter((s) => s.title !== '')
+    .filter((s) => (options.level === undefined ? isL2(s.level) : s.level === options.level))
+    .filter((s) =>
+      options.keyword === undefined
+      || s.title.includes(options.keyword)
+      || s.content.includes(options.keyword))
+}
+
 /** 写入卷级或全书摘要。 */
 export async function upsertBookSummary(
   baseToken: string,
@@ -324,15 +399,19 @@ export async function upsertBookSummary(
   if (range.fromChapter !== undefined) fields[MEMORY_F.FROM_CHAPTER] = range.fromChapter
   if (range.toChapter !== undefined) fields[MEMORY_F.TO_CHAPTER] = range.toChapter
 
-  // 同标题的记录做更新，否则新建
+  // 同标题的记录做更新，否则新建。
+  // 标题不跨层级唯一（卷级与全书可能重名），故在同标题候选里**优先取层级
+  // 相同的那条**；层级读不到（字段投影异常）时退回首条，保持旧行为不回退。
   const rows = base.matrixToObjects(
     await base.listRecords(baseToken, TABLE.MEMORY, {
       fieldIds: [MEMORY_F.TITLE, MEMORY_F.LEVEL],
       filter: { logic: 'and', conditions: [[MEMORY_F.TITLE, '==', title]] },
-      limit: 1,
+      limit: 10,
     }, signal),
   )
-  const existingId = rows[0]?.['__recordId']
+  const candidates = rows.filter((r) => typeof r['__recordId'] === 'string')
+  const levelMatch = candidates.find((r) => firstStr(r[MEMORY_F.LEVEL]) === level)
+  const existingId = (levelMatch ?? candidates[0])?.['__recordId']
   if (typeof existingId === 'string') {
     await updateRecordsWithSelfHeal(
       baseToken,

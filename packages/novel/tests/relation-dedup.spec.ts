@@ -101,6 +101,12 @@ vi.mock('@unwr/feishu', () => {
         }
         return ids
       }),
+      // selfheal 的 verifyLinkBackfill 每次 update 都会先 listTables；
+      // 缺这个 stub 会让它抛错 → 误判"link 回填未落库" → 3s/6s/9s 三轮
+      // 退避后抛错。提交 234b592 引入该验证后，本文件 7 个用例因此全红。
+      listTables: vi.fn(async () => ({
+        tables: Object.keys(store).map((name) => ({ name, id: name })),
+      })),
       // 两段式的缓存校验路径：按 ID 直读，须返回库内真实记录
       getRecords: vi.fn(async (_baseToken: string, table: string, recordIds: readonly string[]) => {
         return {

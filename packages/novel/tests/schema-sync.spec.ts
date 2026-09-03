@@ -159,7 +159,10 @@ describe('工具输出与 output schema 同步', () => {
       novel_update_summary: ['chapterNo'],  // 字段已拆成 scene/events/characterChanges/.../freeform，summary 字段不存在
       novel_record_character_state: ['chapterNo', 'character'],
       novel_record_event: ['chapterNo', 'name'],
-      novel_upsert_book_summary: ['level', 'title', 'content'],
+      // upsert_book_summary 已改为 query/upsert 合一（与 manage_* 同款）：
+      // required 只剩 action，title/content/level 改由 execute 的动作级
+      // 守卫把关。理由见下方独立用例（query 被 required 拦死的实机故障）。
+      novel_upsert_book_summary: ['action'],
       // ── 实体（entity.ts）──
       // manage_setting / manage_character / manage_outline / manage_foreshadow / manage_plotline / manage_branch
       // 都是「多 action 共用 schema」的形态（action 守门员分支），所以 schema.required
@@ -194,6 +197,26 @@ describe('工具输出与 output schema 同步', () => {
       const params = tool.parameters as { required?: string[] }
       const reqs = params.required ?? []
       expect(reqs, `${toolName} 不应把 workToken 强制为顶层 required`).not.toContain('workToken')
+    }
+  })
+
+  /**
+   * 回归：action 型工具不得把「仅 upsert 需要」的字段设为 schema 级 required。
+   *
+   * 实机故障 2026-09-03：模型按 novel_manage_* 的惯例调用
+   * `novel_upsert_book_summary {"workToken":…, "action":"query", "level":"卷"}`
+   * 想读已有卷摘要，被 schema 校验拦死：
+   *   invalid arguments: missing required property "title";
+   *   missing required property "content"
+   * 同一个坑 2026-09-02 已在 novel_manage_foreshadow 上踩过一次
+   * （见 entity.ts 的注释）——这里守全部 action 型工具，防止再犯。
+   */
+  it('action 型工具：query 不需要的字段不得进 schema required', () => {
+    const params = collectTools().get('novel_upsert_book_summary')?.parameters as ReqNode
+    expect(params).toBeDefined()
+    const reqs = params.required ?? []
+    for (const f of ['title', 'content', 'level']) {
+      expect(reqs, `novel_upsert_book_summary 不应把 ${f} 设为 schema required`).not.toContain(f)
     }
   })
 

@@ -81,6 +81,17 @@ vi.mock('@unwr/feishu', () => {
       listFields: vi.fn(async () => ({ fields: [] })),
       getField: vi.fn(async () => ({ field: { name: 'x', options: [] } })),
       updateField: vi.fn(async () => ({})),
+      // selfheal 的 verifyLinkBackfill 每次 update 都会先 listTables。
+      // 缺这个 stub 会让它抛错 → 误判"link 回填未落库" → 走 3s/6s/9s
+      // 三轮退避（每个用例平白慢 18s），掩盖真实断言。
+      listTables: vi.fn(async () => ({
+        tables: Object.keys(store).map((name) => ({ name, id: name })),
+      })),
+      getRecords: vi.fn(async (_token: string, table: string, ids: readonly string[]) => ({
+        items: ids
+          .filter((id) => store[table]?.[id] !== undefined)
+          .map((id) => ({ __recordId: id, ...store[table]![id] })),
+      })),
     },
     docs: {
       createDoc: vi.fn(async (title: string) => {

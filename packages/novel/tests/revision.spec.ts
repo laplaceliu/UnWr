@@ -100,6 +100,144 @@ describe('reviseChapter 入参守卫（离线：守卫先于任何 I/O）', () =
   })
 })
 
+/**
+ * 区间参数的配对守卫（lark-cli 契约：--start-block-id requires
+ * --end-block-id and cannot be combined with --block-id）。
+ *
+ * 与上面的守卫同批：全部在 I/O 之前触发，所以用假 base 就能测。
+ */
+describe('reviseChapter 区间参数守卫（离线：先于任何 I/O）', () => {
+  const BASE = 'guard-test-base'
+  const CONTENT = '合并后的段落文本。'
+
+  it('只给 startParagraph → 要求成对', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { scene: '一、验尸', startParagraph: 2 },
+    })).rejects.toThrow(/startParagraph 与 endParagraph 必须成对/)
+  })
+
+  it('只给 endParagraph → 同样要求成对', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { scene: '一、验尸', endParagraph: 4 },
+    })).rejects.toThrow(/startParagraph 与 endParagraph 必须成对/)
+  })
+
+  it('startParagraph > endParagraph → 区间非法', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { scene: '一、验尸', startParagraph: 4, endParagraph: 2 },
+    })).rejects.toThrow(/段落区间非法/)
+  })
+
+  it('区间缺少 scene → 提示段落序号是场景内序号', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { startParagraph: 2, endParagraph: 4 },
+    })).rejects.toThrow(/需要配合 scene/)
+  })
+
+  it('paragraph 与 startParagraph 同时出现 → 语义冲突', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { scene: '一、验尸', paragraph: 2, startParagraph: 2, endParagraph: 4 },
+    })).rejects.toThrow(/语义冲突/)
+  })
+
+  it('只给 startBlockId → 要求与 endBlockId 成对', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { startBlockId: 'doxcnA' },
+    })).rejects.toThrow(/startBlockId 与 endBlockId 必须成对/)
+  })
+
+  it('blockId 与块区间混用 → 拒绝（CLI 禁止）', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'replace', content: CONTENT,
+      target: { blockId: 'doxcnA', startBlockId: 'doxcnB', endBlockId: 'doxcnC' },
+    })).rejects.toThrow(/不能同时使用/)
+  })
+
+  it('expand + 段落区间 → 拒绝并说明 expand 是单点插入', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'expand', content: CONTENT,
+      target: { scene: '一、验尸', startParagraph: 2, endParagraph: 4 },
+    })).rejects.toThrow(/expand 不支持区间定位/)
+  })
+
+  it('expand + 块区间 → 同样拒绝', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'expand', content: CONTENT,
+      target: { startBlockId: 'doxcnA', endBlockId: 'doxcnB' },
+    })).rejects.toThrow(/expand 不支持区间定位/)
+  })
+})
+
+/**
+ * patch 的「跨块 match」守卫（实机报错 2026-09-03）。
+ *
+ * 现场：模型对第 4 章发起 patch，match 跨了两个段落（含 \n\n）：
+ *   "…她量了量胸骨，又量了骶骨。\n\n镊尖已过脐下三寸。"
+ * 预检通过（markdown 渲染里段落之间就是 \n\n），CLI 却必然失败，
+ * 只回 "cli failed with exit code 1（飞书调用失败，请查看原始错误信息。）"
+ * ——原文里让"查看原始错误信息"但根本没有任何原始信息。
+ *
+ * 根因：lark-cli 的 --pattern 契约是
+ *   "simple inline text matched by str_replace; use block_replace for
+ *    paragraphs, multiline content, or multiple blocks"
+ * 即只匹配块内连续文本，跨段落属于 block_replace 的职责。
+ *
+ * 这三条守卫必须在任何 I/O 之前触发（resolveChapterDoc + currentWords
+ * = 3 次 CLI 往返都在其后），因此用假 base 也能测、且**必须**能测。
+ */
+describe('reviseChapter patch 跨块守卫（离线：先于任何 I/O）', () => {
+  const BASE = 'guard-test-base'
+  const CONTENT = '她把镊尖停在腹腔焦炭之上，候了一息。'
+
+  it('跨段落 match（含空行）→ 明确拒绝并指路 replace+paragraph', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'patch',
+      content: CONTENT,
+      target: { match: '她量了量胸骨，又量了骶骨。\n\n镊尖已过脐下三寸。' },
+    })).rejects.toThrow(/跨段落（含空行）/)
+  })
+
+  it('跨行 match（单个换行）→ 同样拒绝', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'patch',
+      content: CONTENT,
+      target: { match: '第一行\n第二行' },
+    })).rejects.toThrow(/跨行（含换行符）/)
+  })
+
+  it('CRLF 形式的跨段落也拦得住（先归一化 \\r\\n）', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'patch',
+      content: CONTENT,
+      target: { match: '第一段。\r\n\r\n第二段。' },
+    })).rejects.toThrow(/跨段落（含空行）/)
+  })
+
+  it('错误信息必须给出两条出路的其中一条', async () => {
+    await expect(reviseChapter(BASE, 4, {
+      action: 'patch',
+      content: CONTENT,
+      target: { match: '甲。\n\n乙。' },
+    })).rejects.toThrow(/replace \+ scene \+ paragraph/)
+  })
+
+  it('单行 match 放行（守卫不得误伤正常润色）', async () => {
+    // 守卫通过后会走到 resolveChapterDoc —— 假 base 必然失败，
+    // 但报错内容必须**不是**跨块守卫的错误，证明单行 match 被放行。
+    await expect(reviseChapter(BASE, 4, {
+      action: 'patch',
+      content: CONTENT,
+      target: { match: '镊尖已过脐下三寸。' },
+    })).rejects.not.toThrow(/跨段落|跨行（含换行符）/)
+  })
+})
+
 describe.skipIf(!HAS_BASE)('端到端：真实飞书改稿', () => {
   const tools = collectTools()
   /**
