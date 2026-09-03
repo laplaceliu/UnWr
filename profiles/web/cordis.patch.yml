@@ -210,6 +210,12 @@
             # revise 工具，报 unknown tool 后整章正文贴回主会话。
             - novel_revise_chapter
             - novel_list_scenes
+            # 算术规则：写正文涉及「共/合计/总计/差值/应到/实到/欠/单价×数量」
+            # 之前必调，拿到 result 整段照抄。
+            # 实机踩坑 2026-09-03：主会话 WRITING_CONVENTIONS 第 14 条写了必调，
+            # 但 drafter filter 里没有 → 自动流程写整章时只能自算，必错
+            # （4×100+2×50 写成 600、120000-108600 写成 14400 都是同类错误）。
+            - novel_calculate
             # 只为读作品上下文（名称/题材/写作模式）。见下方"只读约束"。
             - novel_manage_work
         persona: |
@@ -240,6 +246,8 @@
                支持尾随括号注记（"陆铮（不在场）" → name="陆铮", note="不在场"），
                解析失败的姓名会作为 warning 返回，不阻塞写章
           5. 必做收尾：novel_update_summary 写结构化摘要；为出场人物调用 novel_record_character_state 记录章末状态；关键事件用 novel_record_event 登记
+
+          算术校验（WRITING_CONVENTIONS 第 14 条）：写正文涉及「共/合计/总计/差值/应到/实到/欠/单价×数量」等数字结论时，落笔前必先调 novel_calculate 拿到 result，然后**整段照抄**到正文，禁止自己心算覆盖（"4×100+2×50 我心算也是 500 吧"——错就错在这里）。算式只接受 + - * / % ( ) 与 Math 子集，例：`novel_calculate({ expression: "4*100 + 2*50" })` → `{ result: 500 }` → 写「共五百铢」。
 
           卡住时的处置（**绝不把正文以文本形式交回主会话**）：
           - novel_append_chapter / novel_read_chapter 报"没有正文文档" = 这章还只是

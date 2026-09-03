@@ -49,6 +49,9 @@ const DRAFTER_REQUIRED = [
   // 撞上「大纲壳」时要能自己核对章纲与作品上下文，否则只能把整篇正文
   // 以文本形式交回主会话（实机 2026-09-02 第 1 章死锁）。
   'novel_manage_outline',
+  // 算术规则（WRITING_CONVENTIONS 第 14 条）：写正文涉及「共/合计/总计/差值」
+  // 必调。实机 2026-09-03：drafter filter 里没有就只能自算，必错。
+  'novel_calculate',
 ]
 
 /**
