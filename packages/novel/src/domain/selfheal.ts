@@ -238,8 +238,9 @@ export async function updateRecordsWithSelfHeal(
     if (attempt === 4) {
       throw new Error(
         `${table} link 回填未生效（已重试 3 次）：${missing.join('、')}。`
-        + '服务端对新建记录的 link 更新可能被静默丢弃；请稍后重试该写入，'
-        + '或用 novel_read_tool 核对目标记录后手动修复。',
+        + '可能是写入确实被平台丢弃；也可能是该表存在历史遗留的重名字段'
+        + '（读取按名合并已修复，get_config 会自动触发字段级修复）。'
+        + '请先用 novel_manage_* 的 query 核对目标记录后再决定是否重写。',
       )
     }
     onHeal?.(`${table} link 回填未落库（${missing.join('、')}），退避重试 ${attempt}/3……`)

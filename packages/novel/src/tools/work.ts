@@ -233,6 +233,12 @@ export function registerWorkTools(ctx: Context): void {
           `已自动补齐作品库缺失字段 ${schemaCheck.createdFields} 个（旧库升级）。`,
         )
       }
+      if (schemaCheck.repairedDuplicates.length > 0) {
+        schemaWarnings.push(
+          `修复了历史遗留的重名字段（数据已并集合并到单列）：`
+            + `${schemaCheck.repairedDuplicates.join('、')}`,
+        )
+      }
       if (schemaCheck.failedLinks.length > 0) {
         schemaWarnings.push(
           `部分关联字段自动补齐失败（稍后重试或用 sync-fields 脚本）：${schemaCheck.failedLinks.join(', ')}`,

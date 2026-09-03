@@ -142,6 +142,31 @@ export async function createFields(
 }
 
 /**
+ * 删除字段（按 id 或 name）。
+ *
+ * ⚠️ 高危：`+field-delete` 属 high-risk-write，**必须**带 `--yes`，且
+ * **字段内数据一并删除，不可恢复**。调用方必须先把数据合并到别处。
+ *
+ * 用途：清理历史遗留的**重名字段**（见 matrixToObjects 的重名合并说明）。
+ * 合成一个字段后，多余的同名列才可以安全删除。
+ */
+export async function deleteField(
+  baseToken: string,
+  tableId: string,
+  field: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await runCli(
+    ['base', '+field-delete',
+      '--base-token', baseToken,
+      '--table-id', tableId,
+      '--field-id', field,
+      '--yes'],
+    { signal },
+  )
+}
+
+/**
  * 创建公式字段。
  * 必须带 `--i-have-read-guide`（官方强制要求）。
  * 注意：官方明确 Formula 是 Lookup 的严格超集，跨表引用一律用 Formula。
@@ -399,20 +424,65 @@ function unpackCreatedBase(e: CreatedBaseEnvelope): { base_token: string; name: 
 }
 
 /**
- * 把 record-list 的矩阵结果转成对象数组，便于上层使用。
+ * 把 record-list / record-get 的矩阵结果转成对象数组，便于上层使用。
  * 矩阵形式节省带宽但难用，此处做一次转换。
  *
  * 每行会附带 `__recordId`（若 CLI 返回了 record_id_list），
  * 更新该记录时需要它——务必保留，不要在做对象映射时丢弃。
+ *
+ * **重名字段会合并**（2026-09-03 实机事故）：
+ * 同一张表里可能存在多个同名字段（`+field-create` 现在会拒绝同名，
+ * 但历史库里已有残留，实测某库 14 张表中有 4 处重名 link 字段）。
+ * 矩阵里它们各占一列，而这里按**字段名**建键——若不合并，
+ * 后一列会直接覆盖前一列，导致前一个字段里的数据**凭空消失**。
+ *
+ * 实测某事件表 91 条记录：12 条只有第一个字段有值、43 条只有第二个有值、
+ * 36 条两边都有。不合并 → 那 12 条的章节关联全部读不到（上下文静默缺失）；
+ * 且 link 回填验证会误判成"写入未生效"，白跑 3 轮退避重试后报错。
+ *
+ * 合并语义：
+ *   - 数组（link / 多选 / 人员）：**并集**，按元素去重，保序
+ *   - 标量：**首个非空值**优先（不臆造数据）
+ * 重名字段本就是同一个逻辑字段的重复，并集即正确语义。
  */
 export function matrixToObjects(matrix: RecordMatrix): Record<string, unknown>[] {
   return matrix.data.map((row, rowIndex) => {
     const obj: Record<string, unknown> = {}
     matrix.fields.forEach((field, i) => {
-      obj[field] = row[i]
+      obj[field] = mergeDuplicateCells(obj[field], row[i])
     })
     const rid = matrix.record_id_list?.[rowIndex]
     if (rid !== undefined) obj['__recordId'] = rid
     return obj
   })
+}
+
+/** 单元格是否为空（null / undefined / 空数组都不算有值）。 */
+function isEmptyCell(v: unknown): boolean {
+  return v === null || v === undefined || (Array.isArray(v) && v.length === 0)
+}
+
+/** 数组去重（按 JSON 结构），保持首次出现顺序。 */
+function unionCells(a: readonly unknown[], b: readonly unknown[]): unknown[] {
+  const seen = new Set<string>()
+  const out: unknown[] = []
+  for (const v of [...a, ...b]) {
+    const k = JSON.stringify(v)
+    if (typeof k === 'string' && !seen.has(k)) {
+      seen.add(k)
+      out.push(v)
+    }
+  }
+  return out
+}
+
+/**
+ * 合并同一字段名下的多个单元格（重名字段才会走到第二次）。
+ * 唯一名场景下 `prev` 恒为 undefined，直接返回 `next`，零行为变化。
+ */
+function mergeDuplicateCells(prev: unknown, next: unknown): unknown {
+  if (prev === undefined) return next
+  if (Array.isArray(prev) && Array.isArray(next)) return unionCells(prev, next)
+  // 标量：首个非空优先；前一个为空则退到后一个
+  return isEmptyCell(prev) ? next : prev
 }
