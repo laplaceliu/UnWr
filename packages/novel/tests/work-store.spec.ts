@@ -56,17 +56,17 @@ function rawOnDisk(): string {
 
 describe('作品注册表持久化', () => {
   it('记住 token 后确实落到磁盘', () => {
-    rememberWorkToken('DDPabptUkazEP7srSIPcRs92ntg')
-    expect(rawOnDisk()).toContain('DDPabptUkazEP7srSIPcRs92ntg')
-    expect(getLastWorkToken()).toBe('DDPabptUkazEP7srSIPcRs92ntg')
+    rememberWorkToken('tokFixture')
+    expect(rawOnDisk()).toContain('tokFixture')
+    expect(getLastWorkToken()).toBe('tokFixture')
   })
 
   it('跨"进程重启"恢复：清空内存态后仍能取回上次作品', () => {
     // 模块内不缓存状态、每次读盘，所以"重新读"就等价新进程冷启动
-    rememberWorkToken('DDPabptUkazEP7srSIPcRs92ntg')
-    expect(getLastWorkToken()).toBe('DDPabptUkazEP7srSIPcRs92ntg')
+    rememberWorkToken('tokFixture')
+    expect(getLastWorkToken()).toBe('tokFixture')
     // 再来一次读取 = 模拟重启后的全新进程
-    expect(getLastWorkToken()).toBe('DDPabptUkazEP7srSIPcRs92ntg')
+    expect(getLastWorkToken()).toBe('tokFixture')
   })
 
   it('多个作品按最近使用排序，且上限内保留', () => {
@@ -82,11 +82,11 @@ describe('作品注册表持久化', () => {
     rememberWorkToken('tokX')
     expect(knownWorks()[0]?.name).toBe('')
     // 后续 get_config / list 学到名字
-    rememberWork({ baseToken: 'tokX', name: '洗骨录' })
-    expect(knownWorks()[0]?.name).toBe('洗骨录')
+    rememberWork({ baseToken: 'tokX', name: '示例作品' })
+    expect(knownWorks()[0]?.name).toBe('示例作品')
     // 再来一次无名记录，不得把名字抹掉
     rememberWorkToken('tokX')
-    expect(knownWorks()[0]?.name).toBe('洗骨录')
+    expect(knownWorks()[0]?.name).toBe('示例作品')
   })
 
   it('损坏的状态文件不致命（按空状态处理）', () => {
@@ -116,8 +116,8 @@ describe('作品注册表持久化', () => {
 describe('resolveWorkToken 冷启动恢复（本轮报错的主路径）', () => {
   it('本机有记录时，不带 workToken 也能直接解析出来', () => {
     // 前提：进程内默认也为空（冷启动）
-    rememberWorkToken('DDPabptUkazEP7srSIPcRs92ntg')
-    expect(resolveWorkToken({})).toBe('DDPabptUkazEP7srSIPcRs92ntg')
+    rememberWorkToken('tokFixture')
+    expect(resolveWorkToken({})).toBe('tokFixture')
   })
 
   it('显式传入优先，并覆盖本机记录', () => {
@@ -133,10 +133,10 @@ describe('无作品记录时的报错必须能自纠正', () => {
   })
 
   it('有记录：直接列出作品名与 token（不必再绕一次 list）', () => {
-    rememberWork({ baseToken: 'DDPabptUkazEP7srSIPcRs92ntg', name: '洗骨录' })
+    rememberWork({ baseToken: 'tokFixture', name: '示例作品' })
     const hint = noWorkTokenHint()
-    expect(hint).toContain('洗骨录')
-    expect(hint).toContain('DDPabptUkazEP7srSIPcRs92ntg')
+    expect(hint).toContain('示例作品')
+    expect(hint).toContain('tokFixture')
   })
 
   it('无名作品只列 token，不显示难看的空括号', () => {
@@ -154,12 +154,12 @@ describe('mergeWorks：搜索结果与本机记录合并（问题 B）', () => {
 
   it('本机独有（新建、索引未收录）的作品被补进列表', () => {
     const local = [
-      { baseToken: 'tokNew', name: '洗骨录' },
+      { baseToken: 'tokNew', name: '示例作品' },
       { baseToken: 'tokA', name: '甲' },
     ]
     const { works, localOnly } = mergeWorks(remote, local)
     expect(works.map((w) => w.baseToken)).toEqual(['tokA', 'tokB', 'tokNew'])
-    expect(localOnly.map((w) => w.name)).toEqual(['洗骨录'])
+    expect(localOnly.map((w) => w.name)).toEqual(['示例作品'])
   })
 
   it('远程已覆盖时不重复补（按 baseToken 去重）', () => {

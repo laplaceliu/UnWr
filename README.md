@@ -104,6 +104,7 @@ DSH 启动后**不再需要独立的 `pnpm workbench` 进程**——聊天与工
 ### 在 DSH 中运行
 
 UnWr 打包为单文件 bundle，源码版与 npx 版 DSH 通用。详见 `docs/tech/02-dsh-integration.md`。
+（本节为**源码开发态**流程；最终用户的安装方式见下文「发布与安装（组合包）」。）
 
 ```bash
 # 1. 构建（npx 版 DSH 不含 tsx，必须打包）
@@ -128,6 +129,39 @@ npx @deepseek-ai/dsh web      # 端口 3080
 #   [unwr] 插件已加载: unwr-novel
 #   [unwr] 已注册工具 (1): novel_build_context
 ```
+
+### 发布与安装（组合包）
+
+UnWr 以 DSH 官方**组合包（bundle）**形态分发：npm 包声明 `dsh.bundle`，patch 里插件行
+按包名引用（`unwr/dist/...`），`dsh plugin add` 会把它写进 profile 的 bundles 列表。
+机制见官方文档「打包与安装插件」（deepseek-harness.github.io/deepseek-harness/develop/basic/publish）。
+
+维护者打包（tarball 通道，产物自包含，用户零构建授权）：
+
+```bash
+pnpm pack:plugin
+# build → verify:bundle → 组装 packages/plugin/dist/ → 生成 bundle patch
+# → 隐私红线扫描 → pnpm pack，产出 dist/unwr-<version>.tgz
+```
+
+- persona / toolFilter 的单一真源仍是 `profiles/web/cordis.patch.yml`，
+  bundle patch（`packages/plugin/cordis.patch.yml`）由打包脚本生成，勿手改；
+- 版本需同步 bump 根 `package.json` 与 `packages/plugin/package.json`（脚本会校验）。
+
+用户安装：
+
+```bash
+dsh plugin --profile web add ./laplaceliu-unwr-<version>.tgz   # tarball 通道
+dsh plugin --profile web add @laplaceliu/unwr                  # npm 通道
+dsh --profile web --dump-config                                # 确认出现 unwr* 层
+npx @deepseek-ai/dsh --profile web web                         # 启动，访问 /workbench
+```
+
+> 包名用 scoped `@laplaceliu/unwr`：裸名 `unwr` 触发 npm 的 typosquat 保护
+> （与 `swr`/`lunr` 等现有包过于相似，PUT 直接 403）。
+
+覆盖某行（改 persona、开 verbose、关工作台等）：在自己 profile 的 `cordis.patch.yml`
+里按 id 重写——patch 按行胜出且**整行替换 config（不深度合并）**，必须重述该行全部键。
 
 ### 作品注册与 workToken 承接
 

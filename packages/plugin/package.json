@@ -1,0 +1,34 @@
+{
+  "name": "@laplaceliu/unwr",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "UnWr — Unlimited Writing. 无限写作，小说写作 AI 智能体，DeepSeek Harness 组合包（bundle）。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laplaceliu/UnWr.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-bundle",
+    "novel-writing",
+    "ai-agent"
+  ],
+  "main": "./dist/unwr-novel.mjs",
+  "exports": {
+    ".": "./dist/unwr-novel.mjs",
+    "./novel": "./dist/unwr-novel.mjs",
+    "./web": "./dist/unwr-web.mjs",
+    "./dist/*": "./dist/*"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

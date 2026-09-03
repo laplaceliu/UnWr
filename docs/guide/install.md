@@ -24,7 +24,7 @@
 
 ```bash
 # 1. 拉代码（按你实际的目录布局调整）
-cd ~/Source/github.com/laplaceliu
+cd ~/Source/github.com/<your-github-username>
 git clone <your-fork-url> UnWr
 cd UnWr
 

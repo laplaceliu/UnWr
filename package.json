@@ -1,5 +1,5 @@
 {
-  "name": "unwr",
+  "name": "unwr-workspace",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -23,6 +23,7 @@
     "test:tools": "node --import tsx/esm packages/novel/scripts/tool-audit.ts",
     "test:setup-base": "node scripts/setup-test-base.mjs",
     "verify:bundle": "node scripts/verify-bundle.mjs",
+    "pack:plugin": "node scripts/build-publish.mjs",
     "smoke": "node --import tsx/esm packages/feishu/scripts/smoke.ts",
     "setup:dsh": "node scripts/setup-dsh-links.mjs",
     "sync:patch": "node scripts/sync-cordis-patch.mjs",

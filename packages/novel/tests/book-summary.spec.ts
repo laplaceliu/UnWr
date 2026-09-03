@@ -126,24 +126,24 @@ beforeEach(() => {
 
 describe('novel_upsert_book_summary — action=query', () => {
   it('只带 level 就能查卷摘要（2026-09-03 报错的现场参数）', async () => {
-    seed('第一卷 误入暹湾', MEMORY_LEVEL.VOLUME, { [MEMORY_F.FROM_CHAPTER]: 1, [MEMORY_F.TO_CHAPTER]: 14 })
+    seed('示例卷', MEMORY_LEVEL.VOLUME, { [MEMORY_F.FROM_CHAPTER]: 1, [MEMORY_F.TO_CHAPTER]: 14 })
     seed('全书梗概', MEMORY_LEVEL.BOOK)
 
     const tool = collectTools().get(TOOL)!
     const r = await tool.execute(
-      { workToken: 'DDPabptUkazEP7srSIPcRs92ntg', action: 'query', level: '卷' },
+      { workToken: 'tokFixture', action: 'query', level: '卷' },
       { signal: AbortSignal.timeout(10_000) },
     ) as { action: string; total: number; items: { level: string; title: string; content: string; fromChapter?: number }[] }
 
     expect(r.action).toBe('query')
     expect(r.total).toBe(1)
-    expect(r.items[0]?.title).toBe('第一卷 误入暹湾')
+    expect(r.items[0]?.title).toBe('示例卷')
     expect(r.items[0]?.level).toBe('卷')
     expect(r.items[0]?.fromChapter).toBe(1)
   })
 
   it('不传 level 返回卷+全书，且不带出章节级条目', async () => {
-    seed('第一卷 误入暹湾', MEMORY_LEVEL.VOLUME)
+    seed('示例卷', MEMORY_LEVEL.VOLUME)
     seed('全书梗概', MEMORY_LEVEL.BOOK)
     seed('第 3 章摘要', MEMORY_LEVEL.CHAPTER)
 
@@ -153,20 +153,20 @@ describe('novel_upsert_book_summary — action=query', () => {
     }
 
     expect(r.total).toBe(2)
-    expect(r.items.map((s) => s.title).sort()).toEqual(['全书梗概', '第一卷 误入暹湾'].sort())
+    expect(r.items.map((s) => s.title).sort()).toEqual(['全书梗概', '示例卷'].sort())
   })
 
   it('title 作为子串过滤标题与正文', async () => {
-    seed('第一卷 误入暹湾', MEMORY_LEVEL.VOLUME)
-    seed('第二卷 风起暹湾', MEMORY_LEVEL.VOLUME)
+    seed('示例卷·子串', MEMORY_LEVEL.VOLUME)
+    seed('示例卷·另一子串', MEMORY_LEVEL.VOLUME)
 
     const tool = collectTools().get(TOOL)!
-    const r = await tool.execute({ action: 'query', title: '第二卷' }, { signal: AbortSignal.timeout(10_000) }) as {
+    const r = await tool.execute({ action: 'query', title: '另一子串' }, { signal: AbortSignal.timeout(10_000) }) as {
       total: number; items: { title: string }[]
     }
 
     expect(r.total).toBe(1)
-    expect(r.items[0]?.title).toBe('第二卷 风起暹湾')
+    expect(r.items[0]?.title).toBe('示例卷·另一子串')
   })
 })
 
@@ -185,11 +185,11 @@ describe('novel_upsert_book_summary — action=upsert', () => {
   })
 
   it('同标题 + 同层级 → 更新而非新建', async () => {
-    const id = seed('第一卷 误入暹湾', MEMORY_LEVEL.VOLUME)
+    const id = seed('示例卷', MEMORY_LEVEL.VOLUME)
     const tool = collectTools().get(TOOL)!
 
     const r = await tool.execute(
-      { action: 'upsert', level: '卷', title: '第一卷 误入暹湾', content: '更新后的内容' },
+      { action: 'upsert', level: '卷', title: '示例卷', content: '更新后的内容' },
       { signal: AbortSignal.timeout(10_000) },
     ) as { recordId: string; updated: boolean }
 
