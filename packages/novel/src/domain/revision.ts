@@ -486,9 +486,23 @@ export async function reviseChapter(
       throw new Error('delete 动作不接受 content——它删除的是整个块。若想替换块内容，请用 action=replace。')
     }
   } else if (params.content === undefined || params.content.trim() === '') {
+    // 区分两种"想删占位段落"的场景：
+    //   (a) 单块删除（原报错）→ action=delete + blockId（推荐）；
+    //   (b) 区间删除（如清理 28-44 占位段）→ action=delete + 同样的 scene + startParagraph/endParagraph（一次即可，不要逐段 delete 17 次）。
+    // 实机 2026-09-03 第 5 章：模型撞了 (a) 后能切对 delete，但不知道 delete 也支持
+    // 区间，准备逐段 17 次 delete——把一次调用→17 次调用。在此提前给"区间也用 delete"。
+    const t = params.target
+    const hasRange = (
+      (t.scene !== undefined && t.scene !== '' && t.startParagraph !== undefined && t.endParagraph !== undefined)
+      || (t.startBlockId !== undefined && t.startBlockId !== '' && t.endBlockId !== undefined && t.endBlockId !== '')
+    )
+    const rangeHint = hasRange
+      ? `\n你传了区间定位（scene+startParagraph/endParagraph 或 startBlockId/endBlockId），`
+        + '改用 action=delete + 同样的区间定位，**一次调用**就能删完——不要逐段 delete 17 次。'
+      : `\n若想删单块，改用 action=delete + blockId（不需要 content）。`
     throw new Error(
       'content 不能为空——replace 需要整块新文本，patch 需要替换后的文本，expand 需要插入文本。'
-      + '若你其实想删掉这一块（如清理占位段落），请改用 action=delete（不需要 content）。',
+      + rangeHint,
     )
   }
   if (params.action === 'patch' && (params.target.match === undefined || params.target.match.trim() === '')) {

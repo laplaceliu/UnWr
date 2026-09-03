@@ -47,7 +47,10 @@ function registerReviseChapter(ctx: Context): void {
       + '\n• Inserting new text after a scene or block? → action="expand" + '
       + 'scene|blockId + content.'
       + '\n• Removing a placeholder / empty paragraph? → action="delete" + '
-      + 'blockId (no content needed).'
+      + 'blockId (no content needed). To wipe a CONTIGUOUS range of placeholders '
+      + '17 paragraphs long — DON\'T loop delete 17 times, use '
+      + 'action="delete" + scene + startParagraph/endParagraph (or startBlockId/'
+      + 'endBlockId) — one call wipes the entire range.'
       + '\n\nActions: replace=rewrite target with content; expand=insert content '
       + 'after target; patch=swap an exact text snippet; delete=remove the whole '
       + 'block (no content).'
@@ -79,8 +82,10 @@ function registerReviseChapter(ctx: Context): void {
         // execute 守卫报动作级错误（与 novel_manage_* 的修复同一模式）。
         type: 'string',
         description: 'The new text. REQUIRED for replace/expand (Markdown) and patch '
-          + '(the replacement string). NOT needed for delete — passing content with '
-          + 'delete is an error.',
+          + '(the replacement string). NOT needed for delete. '
+          + 'Tip: if you want to wipe a contiguous range (e.g. 17 placeholder paragraphs), '
+          + 'set this empty AND switch action to "delete" — that uses the same range '
+          + 'location to remove everything in one call.',
       },
       scene: {
         type: 'string',
@@ -100,6 +105,9 @@ function registerReviseChapter(ctx: Context): void {
           + 'Must be paired with endParagraph and requires scene. Use it to merge several '
           + 'consecutive paragraphs into one: replace with scene + startParagraph/endParagraph '
           + 'collapses the whole range into your new content in a single call. '
+          + 'ALSO supports action="delete" — to wipe a contiguous run of placeholder '
+          + 'paragraphs in one shot, use action="delete" + scene + startParagraph/'
+          + 'endParagraph instead of looping delete N times. '
           + 'CAUTION: every block in the range is affected, including non-paragraph blocks '
           + '(quotes, lists, images) sitting between the endpoints. '
           + 'Not supported for action=expand.',
