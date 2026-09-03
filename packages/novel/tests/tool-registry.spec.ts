@@ -67,8 +67,8 @@ describe('工具注册表一致性', () => {
   const registry = collectTools()
   const names = [...registry.keys()]
 
-  it('27 个工具全部注册且字段齐全、名字唯一', () => {
-    expect(names.length).toBe(27)
+  it('28 个工具全部注册且字段齐全、名字唯一', () => {
+    expect(names.length).toBe(28)
     expect(new Set(names).size).toBe(names.length)
     for (const name of names) {
       const t = registry.get(name)!

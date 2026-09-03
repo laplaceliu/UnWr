@@ -25,6 +25,7 @@ import { registerConsistencyTools } from './tools/consistency.ts'
 import { registerRevisionTools } from './tools/revision.ts'
 import { registerEntityTools } from './tools/entity.ts'
 import { registerWorkTools } from './tools/work.ts'
+import { registerCalculateTools } from './tools/calculate.ts'
 import { registerBreakthroughTools } from './tools/breakthrough.ts'
 import { registerCharacterArcTools } from './tools/character-arc.ts'
 import { registerTensionTools } from './tools/tension.ts'
@@ -186,6 +187,12 @@ export const WRITING_CONVENTIONS = `
    - **严禁档与高危档命中即阻断，不与文笔/爽点/一致性权衡**：不可用「但这段
      写得好」为由放行。但**审慎档不要过度反应**——它不是阻断项，别为了它
      推翻已经写好的情节。
+14. **算术规则**（实机踩坑 2026-09-03：模型直算多步四则不可靠）：
+   - 凡写到「共/合计/总计/差值/应到/实到/欠/单价×数量」等数字结论，**落笔前必须先调 novel_calculate**。模型把中文翻成 JS 算式（结构映射，擅长），工具负责求值（纯算术，稳定）。
+   - 拿到 result 后**整段照抄**到正文，禁止自己心算覆盖（"4×100+2×50 我心算也是 500 吧"——错就错在这里）。steps 字段可一并抄入正文做演算展示。
+   - 算式只接受 + - * / % ( ) 与 Math 子集（floor/ceil/abs/round/min/max/pow/sqrt/log）。不要传变量、字符串、对象、Function。
+   - 例：「四张一百铢，二张五十铢」→ novel_calculate({ expression: "4*100 + 2*50" }) → { result: 500 } → 写「共五百铢」。
+   - 例：「应到十二万贯，实到十万八千六百贯」→ novel_calculate({ expression: "120000 - 108600" }) → { result: 11400 } → 写「差一万一千四百贯」。
 `.trim()
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -202,6 +209,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerRevisionTools(ctx)
   registerEntityTools(ctx)
   registerWorkTools(ctx)
+  registerCalculateTools(ctx)
   registerBreakthroughTools(ctx)
   registerCharacterArcTools(ctx)
   registerTensionTools(ctx)
