@@ -339,6 +339,31 @@ const numOrUndef = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) ? v : undefined
 
 /**
+ * 把可能 undefined 的字段展开到对象里——undefined/null 时**不写入键**。
+ *
+ * 解决 DSH `value is not lossless JSON` 错（实机 2026-09-03）：
+ *   - DSH 的 `@deepseek-ai/dsh-tools/snapshotJsonValue` 会逐属性 visit 对象值，
+ *     遇 undefined 视为不可序列化，整对象拒收；
+ *   - JSON.stringify 在这种场景下会**丢弃** undefined 键，dev 看不出来。
+ *
+ * 4 个会触发的 query 函数：
+ *   - `entity.queryForeshadows`（plantChapter/planPayoffChapter/actualPayoffChapter）
+ *   - 本文件 `queryBookSummaries`（fromChapter/toChapter）
+ *   - `entity.queryPlotlines` 已用同等 spread，跳过；
+ *   - `entity.queryRelations` `startChapter` `?? 0` 兜底，跳过。
+ *
+ * 用法见 entity.ts 同名函数。
+ */
+function presentSparse<K extends string, V>(
+  key: K,
+  value: V | null | undefined,
+): { [P in K]?: V } {
+  return (value === null || value === undefined
+    ? {}
+    : ({ [key]: value } as { [P in K]: V }))
+}
+
+/**
  * 查询卷级 / 全书摘要（分层记忆 L2 的**读取侧**）。
  *
  * 为什么必须有：upsert 的去重键是**标题**，模型不先查就写，会因标题
@@ -371,8 +396,10 @@ export async function queryBookSummaries(
       level: firstStr(r[MEMORY_F.LEVEL]),
       title: str(r[MEMORY_F.TITLE]),
       content: str(r[MEMORY_F.CONTENT]),
-      fromChapter: numOrUndef(r[MEMORY_F.FROM_CHAPTER]),
-      toChapter: numOrUndef(r[MEMORY_F.TO_CHAPTER]),
+      // 章节字段是 optional——单元格值不是数字（章节号列空 / link 反解失败）
+      // 时 numOrUndef 回 undefined，必须用 presentSparse 跳过键。
+      ...presentSparse('fromChapter', numOrUndef(r[MEMORY_F.FROM_CHAPTER])),
+      ...presentSparse('toChapter', numOrUndef(r[MEMORY_F.TO_CHAPTER])),
     }))
     .filter((s) => s.title !== '')
     .filter((s) => (options.level === undefined ? isL2(s.level) : s.level === options.level))

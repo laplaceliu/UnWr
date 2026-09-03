@@ -652,6 +652,39 @@ function firstLinkId(v: unknown): string | undefined {
   return typeof first === 'string' && first !== '' ? first : undefined
 }
 
+/**
+ * 把可能 undefined 的字段展开到对象里——undefined/null 时**不写入键**。
+ *
+ * 解决 DSH `value is not lossless JSON` 错（实机 2026-09-03）：
+ *   - DSH 的 `@deepseek-ai/dsh-tools/snapshotJsonValue` 会逐属性 visit 对象值；
+ *     遇 undefined 视为不可序列化，**整对象拒收**。
+ *   - 但 `JSON.stringify` 在这种场景下会**丢弃** undefined 键——dev/本地调试
+ *     看不出来，到 DSH 那就炸。这就是「看得见的对，DSH 拒」的不一致。
+ *   - 实机踩坑：`novel_manage_foreshadow {action:"query"}` 在 link
+ *     字段不可解章节号时（章节记录不存在 / link 是空数组 / noMap 为空），
+ *     `chapterNoOf()` 返回 undefined 直接进对象，DSH 拒。
+ *
+ * 用法（必须 spread 嵌入字面量，return 容器需再包一层）：
+ *   return {
+ *     content: str(...),
+ *     type: firstStr(...),
+ *     ...presentSparse('plantChapter', chapterNoOf(...)),
+ *     ...presentSparse('planPayoffChapter', chapterNoOf(...)),
+ *   }
+ * 而不是 `{ plantChapter: chapterNoOf(...) }`。
+ *
+ * 模式一致的 4 个 query 都要走这条路：`queryForeshadows`
+ * / `queryBookSummaries` 等产 optional 章节号/章节列表的位置。
+ */
+function presentSparse<K extends string, V>(
+  key: K,
+  value: V | null | undefined,
+): { [P in K]?: V } {
+  return (value === null || value === undefined
+    ? {}
+    : ({ [key]: value } as { [P in K]: V }))
+}
+
 /** link 单元格 → 全部 recordId。 */
 function allLinkIds(v: unknown): string[] {
   if (!Array.isArray(v)) {
@@ -703,9 +736,11 @@ export async function queryForeshadows(
       type: firstStr(r[FORESHADOW_F.TYPE]),
       status: firstStr(r[FORESHADOW_F.STATUS]),
       importance: num(r[FORESHADOW_F.IMPORTANCE]),
-      plantChapter: chapterNoOf(r[FORESHADOW_F.PLANT_CHAPTER]),
-      planPayoffChapter: chapterNoOf(r[FORESHADOW_F.PLAN_PAYOFF_CHAPTER]),
-      actualPayoffChapter: chapterNoOf(r[FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER]),
+      // 章节号是 link 反解字段——章节记录不存在时 chapterNoOf() 回 undefined，
+      // 必须用 presentSparse 跳过该键，否则 DSH 会拒整个对象（lossless JSON）。
+      ...presentSparse('plantChapter', chapterNoOf(r[FORESHADOW_F.PLANT_CHAPTER])),
+      ...presentSparse('planPayoffChapter', chapterNoOf(r[FORESHADOW_F.PLAN_PAYOFF_CHAPTER])),
+      ...presentSparse('actualPayoffChapter', chapterNoOf(r[FORESHADOW_F.ACTUAL_PAYOFF_CHAPTER])),
     }))
     .filter((f) => f.content !== '')
     .filter((f) => options.status === undefined || f.status === options.status)
