@@ -1,427 +1,230 @@
-# UnWr
+# UnWr — Unlimited Writing
 
-**Un**limited **Wr**iting —— 小说写作 AI 智能体，以 DeepSeek Harness（DSH）插件形态交付。
+小说写作 AI 智能体，作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）插件运行。
 
-小说数据统一存放在飞书：多维表格存结构化数据，云文档存章节正文。
-飞书为 source of truth，本插件通过 `lark-cli` 读写同一份数据。
+- **多智能体编排**：1 个主编排官 + 7 个领域子代理（设定官 / 人物官 / 大纲官 / 起草官 / 改稿官 / 评审官 / 救火官），由 28 个 `novel_*` 工具落地。
+- **飞书为单一可信源**：13 张多维表格存结构化数据（设定/人物/大纲/伏笔/章节索引/记忆索引/分支/检查…），云文档（docx）存章节正文；本地无独立存储。
+- **三套题材预设**：中文网文 / 类型小说 / 纯文学，按统一维度差异化取值（节奏、刺激点、爽点密度、线索公平…），新增题材不需改流程。
+- **生产级鲁棒性**：所有 link 写入走落库验证 + 3s/6s/9s 退避；重名字段自愈；写后索引延迟轮询容忍；DSH 进程重启后会话级默认作品自动恢复。
 
-## 当前状态
+> 当前阶段：DSH 插件核心链路已落地（28 工具 / 7 子代理 / 三层架构 / 端到端 e2e 已通过），UI 工作台暂未实现也不在用——一切以 DSH 主会话 + 工具调用交互为主。
 
-需求阶段与技术选型已完成，骨架已搭建并通过实机验证。
+---
 
-| 阶段 | 文档 |
-|------|------|
-| 功能清单与飞书实现验证 | `docs/requirements/01-features-and-verification.md` |
-| 飞书数据模型（13 张表） | `docs/requirements/02-feishu-data-model.md` |
-| 多智能体角色矩阵 | `docs/requirements/03-agent-matrix.md` |
-| 题材配置三套预设 | `docs/requirements/04-genre-presets.md` |
-| 分层记忆与一致性检查 | `docs/requirements/05-memory-and-consistency.md` |
-| 技术选型（含实测数据） | `docs/tech/01-tech-selection.md` |
-
-## 架构
+## 仓库结构
 
 ```
-Layer 3  DSH Tool 层     @unwr/novel  —— 语义化工具，模型唯一可见的界面
-Layer 2  领域服务层       @unwr/novel  —— 业务语义，纯 TS，可 mock 单测
-Layer 1  飞书适配层       @unwr/feishu —— spawn lark-cli，屏蔽全部参数陷阱
-         lark-cli（Go 二进制，47MB，仅可 spawn）
-共享类型  @unwr/schema   —— 表名/字段名常量、题材参数类型
+UnWr/
+├── cordis.yml                    # DSH 插件注册清单（unwr-novel + unwr-web）
+├── package.json                  # pnpm 工作区根，DSH 依赖通过相对路径 link
+├── pnpm-workspace.yaml
+├── profiles/
+│   ├── web/cordis.patch.yml      # 7 个子代理实例 + toolFilter + persona
+│   └── agent/headless-overlay.yml # dsh-headless 无人值守覆盖（persona + UNWR_WORK_BASE 报告尾行）
+├── scripts/
+│   ├── build-plugin.mjs          # esbuild 出 dist/{unwr-novel,unwr-web}.mjs
+│   ├── sync-cordis-patch.mjs     # profiles/web/cordis.patch.yml → ~/.dsh/profiles/web/
+│   ├── setup-dsh-links.mjs       # DSH 源码目录不在默认位置时重定向
+│   ├── setup-test-base.mjs       # 在飞书创建一个干净的测试 Base（含 13 表）
+│   ├── run-e2e.mjs               # test:e2e + test:agent 入口
+│   ├── verify-bundle.mjs         # 校验 dist 产物 + 插件可见性
+│   ├── repair-dup-fields.ts      # 实机重名字段修复（tsc 0 错；幂等）
+│   ├── audit-work.ts             # 离线审计 work-state.json 与远端 Base 一致性
+│   ├── build-publish.mjs         # 离线打包（pack:plugin）
+│   └── feishu/scripts/smoke.ts   # feishu 包 spawn smoke（pnpm smoke）
+├── packages/
+│   ├── schema/   # 飞书 13 张表的字段定义 + 三套题材预设 + 全局常量
+│   ├── feishu/   # L1 飞书适配层：spawn lark-cli，typed 领域 API，屏蔽全部 CLI 陷阱
+│   ├── novel/    # L2 领域服务 + L3 DSH 工具层（28 个 novel_* 工具）
+│   └── web/      # 预留的 DSH web 插件壳（dist 已构建；UI 未启用）
+├── docs/
+│   ├── guide/        # 使用手册（你在这里）
+│   ├── requirements/ # 需求文档（功能 / 数据模型 / 智能体矩阵 / 题材预设 / 记忆与一致性）
+│   └── tech/         # 技术决策记录
+└── pnpm-lock.yaml
 ```
 
-**关键设计：工具按「智能体意图」定义，不按「CLI 命令」定义。**
-200+ CLI 命令不能直接暴露给模型（命令爆炸、参数陷阱、高危操作无拦阻）。
+---
 
-## 包结构
+## 工具清单（28 个 `novel_*` 工具）
 
-```
-packages/
-├── schema/   共享类型与常量（表名常量化，防拼写错误）
-├── feishu/   飞书适配层（纯库，非插件）
-├── novel/    领域服务 + DSH 工具插件
-└── （预留）  后续工具包
-```
+工具按文件分组；运行时由 `packages/novel/src/index.ts` 的 `apply()` 注册到 `ctx.tools`。
+**默认安全模式（`readOnlySafeMode: true`）下**：覆盖式 / 删除类工具不会被注册（防模型幻觉造成不可逆损失）。
 
-## 开发
-
-### 前置依赖
-
-- Node.js v24（DSH 要求 ^22.19 或 >=24）
-- pnpm 11.7+
-- `lark-cli` v1.0.92（飞书认证配置于 `~/.lark-cli/config.json`）
-- DSH：源码版或 npx 版均可
-
-设置 DSH 源码位置（若与 UnWr 不在同级目录）：
-
-```bash
-export UNWR_ROOT=/path/to/UnWr          # cordis.yml 用它定位插件
-pnpm setup:dsh /path/to/deepseek-harness # 重新指向 DSH 源码（可选）
-```
-
-### 常用命令
-
-```bash
-# 安装依赖
-pnpm install
-
-# 类型检查（含 DSH 类型推导验证）
-npx tsc --noEmit -p tsconfig.json
-
-# 测试（含真实飞书端到端用例）
-npx vitest run
-
-# 飞书适配层冒烟测试
-node --import tsx/esm packages/feishu/scripts/smoke.ts
-
-# 为一部作品建齐 13 张表
-node --import tsx/esm packages/schema/scripts/init-work.ts <base_token>
-
-# 启动工作台：在 DSH 启动后访问 http://127.0.0.1:3080/workbench
-# （端口与启动方式见下「在 DSH 中运行」一节）
-```
-
-### 工作台（DSH 中的 UI）
-
-工作台是 DSH 的一个插件（`unwr-web`），静态资源（SPA）与 `/api/*` 路由
-都挂到 DSH 的 `ctx.webServer` 上，访问 `http://127.0.0.1:<port>/workbench`。
-DSH 启动后**不再需要独立的 `pnpm workbench` 进程**——聊天与工作台共享一个端口。
-
-| 界面 | 内容 |
+### `tools/work.ts` — 作品注册表
+| 工具 | 意图 |
 |---|---|
-| S0 作品总览 | 云盘扫描作品卡（题材/模式/进度）、新建作品（目录 + Base + 13 表） |
-| S1 写作台 | 卷/章树 · 正文阅读 · 章节状态流转 · 起草上下文面板（章纲/人物状态/相关设定/伏笔/记忆/题材指引） |
-| S2 智能体 | 8 角色卡（persona/toolFilter 直读 cordis.patch.yml，与 orchestration.spec 同源）· 委托指令生成器 |
-| S3 一致性检查 | 题材评审重点与权重条 · 规则检查（w_* 排序 + 阈值）· 语义清单 · 伏笔时限追踪 |
-| S4 记忆与数据 | 设定/人物/关系/剧情线/伏笔/事件/记忆索引/候选分支/人物状态时间线（只读） |
+| `novel_manage_work` | 切换 / 查询 / 创建作品；维护会话级默认作品（`action: list\|create\|get\|switch`） |
 
-职责边界：工作台**只读为主**，写操作仅限新建作品、写作模式切换、章节状态流转；
-正文起草与结构化数据写入仍由 DSH 智能体完成（评审官只读、起草官落库的
-权限模型不在工作台侧重复实现）。智能体面板的「委托指令生成器」产出符合
-主会话约定第 5 条的显式上下文委托文本，粘贴到 DSH 会话执行。
+### `tools/entity.ts` — 实体管理（设定 / 人物 / 关系）
+| 工具 | 意图 |
+|---|---|
+| `novel_manage_setting` | 设定词条 CRUD；分类（地理/势力/规则/历史/物品/功法） |
+| `novel_manage_character` | 人物 CRUD；姓名/别名/角色定位/首次出场章节 |
+| `novel_manage_relation` | 人物关系 CRUD；按类型（亲属/师徒/对手/暧昧…） |
 
-角色展示数据直读 `profiles/web/cordis.patch.yml`（与编排层测试同一份真值），
-修改角色后刷新页面即生效，无需构建。
+### `tools/chapter.ts` — 章节正文（构建 / 起草 / 读取 / 追加 / 列场景）
+| 工具 | 意图 |
+|---|---|
+| `novel_build_context` | 拼装分层上下文（L0/L1/L2/L3）；含题材指引 `writingGuide` |
+| `novel_write_chapter` | 起草新章（含 `cast` 参数→双向写入章节表.出场人物 + 人物表.出场章节） |
+| `novel_read_chapter` | 读章节正文（`mode: full\|outline\|search`） |
+| `novel_append_chapter` | 追加正文到章末（适合分批起草） |
+| `novel_list_scenes` | 列本章场景（按段落/空行切分，含 sceneId） |
 
-### 在 DSH 中运行
+### `tools/memory.ts` — 记忆沉淀
+| 工具 | 意图 |
+|---|---|
+| `novel_update_summary` | 更新章节摘要（L1：章节级记忆） |
+| `novel_record_character_state` | 记录章末人物状态快照（地点/状态/持有物品） |
+| `novel_record_event` | 记录剧情事件（含 `chapter` link，标 `is_turning_point`） |
+| `novel_upsert_book_summary` | 卷/全书摘要 query\|upsert 合一（按标题去重） |
+| `novel_mark_chapter_memories_stale` | 章节改稿后批量标记忆陈旧（待重新沉淀） |
 
-UnWr 打包为单文件 bundle，源码版与 npx 版 DSH 通用。详见 `docs/tech/02-dsh-integration.md`。
-（本节为**源码开发态**流程；最终用户的安装方式见下文「发布与安装（组合包）」。）
+### `tools/revision.ts` — 改稿与版本
+| 工具 | 意图 |
+|---|---|
+| `novel_revise_chapter` | 改稿（`action: patch\|insert_after\|expand`）；按段落 / 块 / 块区间定位 |
+| `novel_list_scenes` | 同上（与改稿配套：先看场景再改） |
+| `novel_get_chapter_history` | 列章节修订历史 |
+| `novel_restore_chapter` | 一键回滚到任一历史版本（改稿安全网） |
 
-```bash
-# 1. 构建（npx 版 DSH 不含 tsx，必须打包）
-pnpm build              # 产出 dist/unwr-novel.mjs + dist/unwr-web.mjs（+ dist/public/）
-pnpm build:watch        # 开发期热重建
+### `tools/consistency.ts` — 一致性检查
+| 工具 | 意图 |
+|---|---|
+| `novel_run_consistency_check` | 跑一遍设定 / 人设 / 伏笔 / 时间线 / 红线 全量检查 |
+| `novel_get_semantic_check_pack` | 取出本章的语义检查包（送评审官用） |
+| `novel_get_review_focus` | 取本作题材的评审重点（权重 + 阻断阈值 + 题材专项） |
 
-# 2. 挂载到 profile 的用户层 patch
-#    仓内 canonical 配置（profiles/web/cordis.patch.yml）已含 unwr-novel +
-#    unwr-web 两项；运行 `pnpm sync:patch` 后会拷到：
-#    ~/.dsh/profiles/web/cordis.patch.yml   （npx 版 DSH 用）
-#    <UNWR_ROOT>/dist/cordis.local.yml      （源码版 DSH 用 --patch 加载）
-#    DSH 要求 name 为绝对路径，故该文件需填你的实际路径；
-#    它在 ~/.dsh 下（不入 git），不会外泄。
+### `tools/context.ts` — 大纲 / 伏笔 / 剧情线 / 分支
+| 工具 | 意图 |
+|---|---|
+| `novel_manage_foreshadow` | 伏笔 CRUD；按类型（主线/支线/人物/物品）+ 状态 |
+| `novel_manage_plotline` | 剧情线 CRUD；推进状态（铺垫/推进/高潮/收束/完结） |
+| `novel_manage_outline` | 章节大纲 CRUD；与卷联动 |
+| `novel_manage_branch` | 候选分支 CRUD（写章前的多版本规划） |
 
-# 3. 验证配置层被解析
-dsh --profile web --dump-config | grep -A3 unwr
+### `tools/calculate.ts` — 字数与节奏计算
+| 工具 | 意图 |
+|---|---|
+| `novel_calculate` | 字数 / 节奏 / 爽点密度 / 线索公平 等组合指标 |
 
-# 4. 重启 DSH 实例（配置改动不会热生效）
-npx @deepseek-ai/dsh web      # 端口 3080
+### 高阶规划（`tools/breakthrough.ts`、`tools/character-arc.ts`、`tools/tension.ts`）
+| 工具 | 意图 |
+|---|---|
+| `novel_breakthrough_planning` | 突破性章节规划（爽点密度突变 / 视角切换 / 时间跳跃） |
+| `novel_advance_character_arc` | 推进人物弧光（成长 / 转折 / 黑化 / 救赎） |
+| `novel_record_chapter_tension` | 记录本章张力评级（1-5 星）+ 备注 |
 
-# 启动日志出现以下内容即表示插件生效：
-#   [unwr] 插件已加载: unwr-novel
-#   [unwr] 已注册工具 (1): novel_build_context
-```
+---
 
-### 发布与安装（组合包）
+## 子代理矩阵（7 个 `novel_agent_*` 委托工具）
 
-UnWr 以 DSH 官方**组合包（bundle）**形态分发：npm 包声明 `dsh.bundle`，patch 里插件行
-按包名引用（`unwr/dist/...`），`dsh plugin add` 会把它写进 profile 的 bundles 列表。
-机制见官方文档「打包与安装插件」（deepseek-harness.github.io/deepseek-harness/develop/basic/publish）。
+定义在 `profiles/web/cordis.patch.yml`，由宿主 `@deepseek-ai/dsh-tool-subagent` 实例化。**`toolFilter` 是硬约束**——评审官拿不到任何写工具，设定官拿不到读作品外的工具等。
 
-维护者打包（tarball 通道，产物自包含，用户零构建授权）：
-
-```bash
-pnpm pack:plugin
-# build → verify:bundle → 组装 packages/plugin/dist/ → 生成 bundle patch
-# → 隐私红线扫描 → pnpm pack，产出 dist/unwr-<version>.tgz
-```
-
-- persona / toolFilter 的单一真源仍是 `profiles/web/cordis.patch.yml`，
-  bundle patch（`packages/plugin/cordis.patch.yml`）由打包脚本生成，勿手改；
-- 版本需同步 bump 根 `package.json` 与 `packages/plugin/package.json`（脚本会校验）。
-
-用户安装：
-
-```bash
-dsh plugin --profile web add ./laplaceliu-unwr-<version>.tgz   # tarball 通道
-dsh plugin --profile web add @laplaceliu/unwr                  # npm 通道
-dsh --profile web --dump-config                                # 确认出现 unwr* 层
-npx @deepseek-ai/dsh --profile web web                         # 启动，访问 /workbench
-```
-
-> 包名用 scoped `@laplaceliu/unwr`：裸名 `unwr` 触发 npm 的 typosquat 保护
-> （与 `swr`/`lunr` 等现有包过于相似，PUT 直接 403）。
-
-覆盖某行（改 persona、开 verbose、关工作台等）：在自己 profile 的 `cordis.patch.yml`
-里按 id 重写——patch 按行胜出且**整行替换 config（不深度合并）**，必须重述该行全部键。
-
-### 作品注册与 workToken 承接
-
-工具调用可省略 `workToken`：任意一次成功调用会把它记为默认，后续自动沿用，
-显式传入则切换。默认作品**持久化在 `~/.unwr/work-state.json`**（仓库外，
-不含在工作区里写真实 token），因此 **DSH 重启后自动恢复，无需任何调用**。
-
-同时维护一份「本机已知作品」清单，用于补 `drive +search` 的索引延迟：
-新建的 bitable 有**分钟级**延迟才会出现在搜索结果里，而这恰恰是模型最需要
-找的那一步。`novel_manage_work(action=list)` 会合并搜索结果与本机记录，
-本地独有的条目标注 `source: "local"` 并在 `warnings` 里说明。
-
-无记录时的报错会直接列出已知作品名 + token，一次调用即可恢复，不必绕 `list`。
-可用 `UNWR_STATE_FILE` 覆盖状态文件位置（测试环境自动改用临时目录）。
-
-主会话与子代理是独立进程，共享同一份状态文件——子代理里 `create` 的作品，
-主会话的 `list` 也能看到。
-
-**源码版 DSH**（可加载 `.ts`，适合开发）：
-
-```bash
-export UNWR_ROOT=/path/to/UnWr
-
-cd /path/to/deepseek-harness
-node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
-  --patch $UNWR_ROOT/dist/cordis.local.yml
-```
-
-## 已实现的工具（25 个）
-
-| 工具 | 说明 |
-|------|------|
-| `novel_build_context` | 组装起草某章所需的分层上下文（五层记忆 + 人物状态 + 相关设定 + 题材指引），内部并行拉取 |
-| `novel_write_chapter` | **新建章节**：建正文文档 + 写章节索引 + 可选建 Wiki 节点 + 双向登记 `cast`（章节表.出场人物 ∪ 人物表.出场章节） |
-| `novel_read_chapter` | 读章节正文，支持 full / outline / keyword 三种模式 |
-| `novel_append_chapter` | 续写已有章节，并回写字数 |
-| `novel_update_summary` | **沉淀章节摘要**（分层记忆写入侧） |
-| `novel_record_character_state` | 记录人物章末状态快照（位置/伤势/情绪/持有物） |
-| `novel_record_event` | 记录事件索引（时间线、因果链） |
-| `novel_upsert_book_summary` | 卷级 / 全书摘要（长程压缩记忆）：`action=query` 读已有摘要，`action=upsert` 写入 |
-| `novel_record_chapter_tension` | 记录本章张力曲线（开局/中段/结尾三档） |
-| `novel_mark_chapter_memories_stale` | 当章被大幅修订时，标记下游章节摘要为"陈旧" |
-| `novel_run_consistency_check` | **一致性检查（规则型）**：伏笔逾期、方位跳变、伤势突变、事件时序；可落库去重 |
-| `novel_get_semantic_check_pack` | 备齐语义型检查所需材料（人物档案/设定/伏笔/历史摘要），交给模型审阅 |
-| `novel_get_review_focus` | 题材化评审重点：检查权重排序、阻断阈值、题材专项评估线（03 文档第六节差异化的入口），并附**跨题材恒定的内容红线** |
-
-| `novel_revise_chapter` | **改稿**：按场景/块/段落/段落区间定位，支持 replace / expand / patch / delete |
-| `novel_list_scenes` | 列出章节的场景分节与 block id（改稿前探查用） |
-| `novel_get_chapter_history` | 章节版本历史（改稿留痕，可回溯每次改动） |
-
-| `novel_manage_work` | 作品管理：list / create / get_config / update_config（工具链入口） |
-| `novel_manage_setting` | 设定词条：query / upsert（设定官） |
-| `novel_manage_character` | 人物档案：query / upsert（人物官） |
-| `novel_manage_outline` | 大纲：query / set_chapter_outline / upsert_volume（大纲官） |
-| `novel_manage_foreshadow` | 伏笔：query / upsert，含埋设与回收状态；`plantChapter`/`planPayoffChapter`/`actualPayoffChapter` 关联章节（驱动逾期检查） |
-| `novel_manage_plotline` | 主线/支线剧情线：query / upsert；`chapterNos` 关联覆盖章节（整体替换，驱动起草上下文激活） |
-| `novel_manage_branch` | 卡文救援的候选分支：query / upsert（救援官） |
-| `novel_manage_relation` | 人物关系：query / upsert（含关系图检索） |
-| `novel_advance_character_arc` | 推进人物弧光曲线（魂牵梦绕→觉醒→抉择→牺牲→新生） |
-| `novel_breakthrough_planning` | 卡文时的突破性规划（与 `novel_manage_branch` 配合，思路→走向→成本） |
-
-工具落点（哪个能力由谁负责）见 `docs/requirements/01-features-and-verification.md` 的 B/C/D/E/F/I/J 各组；
-角色职责与权限边界见 `docs/requirements/03-agent-matrix.md`。
-
-> 工具归属：
-> - `novel_manage_*` / `novel_revise_*` / `novel_read_*` 等高频读和改工具会被 7 个 `novel_agent_*` 子代理在各自白名单内复用（见 §编排）。
-> - 4 个相对低频工具（`novel_breakthrough_planning` / `novel_advance_character_arc` / `novel_record_chapter_tension` / `novel_mark_chapter_memories_stale`）目前由主会话（主编排官）按需直接调用，未来可按需拆出独立子代理。
-
-### 工具粒度：为什么用 action 而不是拆成 12 个工具
-
-实体管理类工具都用 `action`（query/upsert）区分读写，而非一个操作一个工具。
-原因：**工具越多，「选对工具」本身越容易成为模型的失败来源**。
-同类 CRUD 收敛到一个工具、用 action 区分，选择面小得多。
-（读上下文/写章节/改稿这类核心动作仍是独立工具——它们语义差异大，
-合并反而增加参数复杂度。）
-
-### 改稿的定位策略
-
-`novel_revise_chapter` 支持五种定位，推荐优先用 `scene`：
-
-| 方式 | 适用 | 稳定性 |
-|------|------|--------|
-| `scene` | **推荐**。按 `## ` 场景标题定位，如「二、交锋」 | 高——标题是内容的一部分 |
-| `scene` + `paragraph` | 场景内第 N 段（结构化定位，无需复制原文） | 高 |
-| `scene` + `startParagraph`/`endParagraph` | **段落区间**（两端都包含），一次替换/删除连续多段 | 高 |
-| `blockId`（或 `startBlockId`/`endBlockId`） | 已知确切块 id | 低——**文档结构一变就失效** |
-| `match` | 精确文本替换（patch 动作） | 取决于文本是否唯一 |
-
-场景匹配分三级：精确相等 → 剥离序号（「二、交锋」→「交锋」）→ 子串包含。
-
-**段落区间**用于「把连续几段合并成一段」这类需求——`replace` 带上
-`scene + startParagraph + endParagraph` 一次调用即可，不必 replace 首段再逐条
-delete 其余段。底层是 lark-cli 的兄弟块区间（`--start-block-id` + `--end-block-id`）。
-两点注意：区间内**所有**块都会被处理，包括段落之间夹着的引用块/列表/图片；
-操作完成后区间内的旧 `block_id` 全部失效，需重新 `novel_list_scenes`。
-段落区间不支持 `expand`（那是在单个块之后插入）。
-
-### 一致性检查的设计取舍
-
-检查项分两类，实现策略完全不同：
-
-| 类型 | 检查项 | 实现 |
-|------|--------|------|
-| **规则型** | H3 伏笔逾期、H5 方位/伤势、H4 时序 | 查表判定，**不需要模型**，结果确定、零成本 |
-| **语义型** | H1 设定冲突、H2 人设崩坏、H7 前后矛盾 | 工具只**备齐材料**，由模型在会话中判断 |
-
-理由：在工具里二次调用模型既贵又慢且难验证；而"人设崩了没有"这类
-判断本就该由正在写作的模型来做——它手上有完整正文上下文。
-
-**阈值与顺序随题材**（消费 `consistency_weights`，此前定义了无人用）：
-问题列表按对应 `w_*` 权重降序排列；`blocking` 判定用题材预设的
-`blocking_threshold`（网文 3 / 类型小说 2 / 纯文学 4），不再是写死的 4。
-评审侧的题材差异（网文看爽点追读、类型看诡计公平、纯文学看语言心理）
-用 `novel_get_review_focus` 按作品题材实时渲染——persona 是静态的，
-不随题材变，所以差异必须走工具返回值。
-
-## 编排（novel_agent_* 多智能体）
-
-**主编排官 = 主会话模型本身**（不单独注册）；它把任务委托给 7 个专职子代理。
-每个子代理拥有独立上下文、只看自己的工具白名单（`toolFilter.allow` 是硬约束），
-prompt 与规矩由子代理各自的 `persona` 字段约束，与主会话 system prompt 解耦。
-
-7 个 subagent 实例由仓内 `profiles/web/cordis.patch.yml` 注册，不入 git，
-由 `pnpm sync:patch`（`scripts/sync-cordis-patch.mjs`）生成实机副本到
-`~/.dsh/profiles/web/cordis.patch.yml`。**路径机制**：仓内 canonical 的
-`name` 用 `__UNWR_ROOT__` 占位符（保持零个人路径），sync 时替换为
-`UNWR_ROOT` 绝对路径。不能用 `!!js` 表达式在 YAML 里拼路径——
-loader（cordis-plugin-loader ≥ 1.0.3）只对 `config` / `disabled` 字段
-做 `!!js` 求值，`name` 会原样传给 `import()`，报
-`name.startsWith is not a function`（实机踩坑 2026-09-02）。
-
-| 子代理（toolName） | 角色 | 何时被委托 | 工具白名单 |
+| 子代理 | toolFilter.allow | 职责 | 何时调用 |
 |---|---|---|---|
-| `novel_agent_worldkeeper` | 世界观设定官 | 新增/修改设定、设计体系、查设定冲突 | `novel_manage_setting`, `novel_read_chapter`, `novel_manage_work`（只读） |
-| `novel_agent_characterkeeper` | 人物官 | 建/改人物档案、人物立不住、记章末状态 | `novel_manage_character`, `novel_manage_relation`, `novel_record_character_state`, `novel_read_chapter`, `novel_manage_work`（只读） |
-| `novel_agent_outliner` | 大纲官 | 列卷章大纲、伏笔埋收、剧情线与事件索引 | `novel_manage_outline`, `novel_manage_foreshadow`, `novel_manage_plotline`, `novel_record_event`, `novel_build_context`, `novel_read_chapter`, `novel_manage_work`（只读） |
-| `novel_agent_drafter` | 起草官 | 写第 N 章、续写、自动写完本卷 | `novel_build_context`, `novel_read_chapter`, `novel_write_chapter`, `novel_append_chapter`, `novel_update_summary`, `novel_record_character_state`, `novel_record_event`, `novel_manage_character`（新人物建档）, `novel_manage_relation`（关系登记）, `novel_manage_outline`（只读）, `novel_revise_chapter`（仅本章）, `novel_list_scenes`, `novel_calculate`, `novel_manage_work`（只读） |
-| `novel_agent_reviser` | 改稿官 | 改写/扩缩/换视角·人称·文风 | `novel_read_chapter`, `novel_list_scenes`, `novel_revise_chapter`, `novel_get_chapter_history`, `novel_manage_character`（只读） |
-| `novel_agent_critic` | 评审官 | 评审诊断、定稿前检查 | `novel_get_review_focus`, `novel_read_chapter`, `novel_list_scenes`, `novel_run_consistency_check`, `novel_get_semantic_check_pack`, `novel_get_chapter_history` |
-| `novel_agent_rescuer` | 卡文救援官 | 卡住了、要候选分支 | `novel_build_context`, `novel_manage_branch`, `novel_manage_foreshadow`, `novel_manage_character`（只读）, `novel_read_chapter` |
+| **世界官** `novel_agent_worldkeeper` | `novel_manage_setting`、`novel_manage_work`、`novel_manage_foreshadow`、`novel_manage_plotline` | 设定 / 伏笔 / 剧情线 增删改 | 主编排官发现需要新增/修订设定或伏笔时 |
+| **人物官** `novel_agent_characterkeeper` | `novel_manage_character`、`novel_manage_relation`（+ `novel_manage_work` 仅 query）+ `novel_record_character_state` | 人物 / 关系 CRUD；章末状态快照 | 起草官完成一章后录入人物快照；需新增人物时 |
+| **大纲官** `novel_agent_outliner` | `novel_manage_outline`、`novel_manage_branch`、`novel_manage_foreshadow`、`novel_manage_plotline`（+ `novel_manage_work` 仅 query） | 大纲 / 分支规划 | 主编排官做卷规划时 |
+| **起草官** `novel_agent_drafter` | `novel_build_context` + 全套 chapter/revision/memory/上下文/计算/规划工具（+ `novel_manage_work` 仅 query） | 写章正文 + 配套场景/记忆/计算 | 主编排官决定起草某章时 |
+| **改稿官** `novel_agent_reviser` | `novel_revise_chapter`、`novel_list_scenes`、`novel_read_chapter`、`novel_get_chapter_history`、`novel_restore_chapter`（+ `novel_manage_work` 仅 query） | 微调刚写完的章节 | 起草官完成后主编排官认为需打磨细节 |
+| **评审官** `novel_agent_critic` | `novel_run_consistency_check`、`novel_get_semantic_check_pack`、`novel_get_review_focus`、`novel_read_chapter`（+ `novel_manage_work` 仅 query） | 一致性 / 红线评审 | 章稿完成后 / 主编排官认为需要审稿时 |
+| **救火官** `novel_agent_rescuer` | 全套查询工具 + `novel_restore_chapter` + `novel_mark_chapter_memories_stale`（+ `novel_manage_work` 仅 query） | 兜底修复（重写 / 回滚 / 标记忆陈旧） | 评审官发现重大问题、救火官介入 |
 
-**硬约束**：评审官的白名单里**没有任何写工具**——它只诊断不代笔。
+> **主编排官 = 主会话模型本身**，不单独注册。它通过 7 个 `novel_agent_*` 工具调度子代理；每次调度都遵循 `toolFilter` 硬约束。
+> **persona / WRITING_CONVENTIONS** 写在 `cordis.patch.yml` 各角色的 `persona:` 块——标签纪律、记忆沉淀流程、章节正文渲染规范都在那里定义。
 
-**软约束**：`toolFilter` 粒度只到「工具」级，而 `novel_manage_*` 是 query/upsert 合一。
-改稿官与救援官拿到 `novel_manage_character` 只为**读**口癖与破局素材，其写权限由
-persona 里的「只读约束」限制。同理，4 个建设型角色（设定/人物/大纲/起草）都拿到
-`novel_manage_work`，只为 `action=list|get_config` 确认「自己在给哪部作品干活」——
-子代理继承会话默认作品却**无法核对**，实机 2026-09-02 大纲官因此直接报
-`unknown tool "novel_manage_work"`。真要硬隔离，需要把 `novel_manage_*` 拆成
-`novel_query_*` / `novel_upsert_*` 两组工具——代价是工具数从 25 涨到 30+，
-与「工具越少越好选」的取舍相冲突，暂不做。
+---
 
-**白名单缺工具 = 硬失败**：子代理调白名单外的工具会拿到
-`Error: unknown tool "<name>"`（`ToolNotFoundError`），且它**没有任何自救手段**。
-因此「子代理该能看到什么」必须一次性配够——宁可多给一个靠 persona 限只读的读工具，
-也不要让它在关键路径上撞墙。
+## 三层架构
 
-详见 `docs/requirements/03-agent-matrix.md`（角色职责与权限）。
-
-启用：
-```bash
-export UNWR_ROOT=<仓库根绝对路径>
-pnpm build                       # 构建 dist/unwr-novel.mjs
-pnpm sync:patch                  # 占位符 → 绝对路径，生成两份实机副本：
-                                 #   ~/.dsh/profiles/web/cordis.patch.yml （npx 版）
-                                 #   dist/cordis.local.yml                （--patch overlay）
-node --import tsx/esm apps/cli/src/bin.ts web --profile unwr \
-  --patch $UNWR_ROOT/dist/cordis.local.yml
-# 启动日志出现 7 个 unwr-agent-* 插件即表示编排注册成功
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  L3  DSH 工具层  (packages/novel/src/tools/*.ts)                │
+│      28 个 novel_* 工具，defineTool() 注册，execute 负责串联    │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ 调用纯 TS 领域函数
+┌─────────────────────────────▼───────────────────────────────────┐
+│  L2  领域服务层  (packages/novel/src/domain/*.ts)               │
+│      业务语义，零 CLI 知识，纯函数可 mock；含 selfheal / 写入退避 │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ 调用 typed 适配
+┌─────────────────────────────▼───────────────────────────────────┐
+│  L1  飞书适配层  (packages/feishu/src/*.ts)                      │
+│      spawn lark-cli；提供 base/record/docs/path 四组 typed API   │
+│      matrixToObjects 合并重名字段；verifyRetryDelays 落库验证     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-修改 persona / toolFilter：编辑 `profiles/web/cordis.patch.yml` → `pnpm sync:patch` → 重启实例。
-构建产物 `dist/unwr-novel.mjs` 不变，无需 `pnpm build`。
+**为什么 L1 用 spawn 不用 SDK**：lark-cli 是 47MB Go 静态二进制（package.json 无 main），只能 spawn。实测单次调用 640ms，进程启动占 67ms（10%），网络占 570ms（90%）——换 SDK 最多省 10% 启动时间，性价比极低。**真性能解法是并行 + 缓存，不是换 SDK**（4 次并行 3.8× 加速）。
 
-### 路由契约（改一处必须同步另一处）
+---
 
-DSH 的 `tool-subagent` Config **没有 `description` 字段**，父模型看到的 7 个委托工具
-描述是同一份通用文案，只能靠 `toolName` 区分。因此「什么意图该派给谁」写在两处：
+## 开发命令速查
 
-1. `packages/novel/src/index.ts` → `WRITING_CONVENTIONS` 第 4 条的**意图→角色路由表**
-   （主会话系统提示词，改它需要 `pnpm build`）
-2. `profiles/web/cordis.patch.yml` → 每个 persona 首行的**「何时被委托」**
-   （改它只需 `pnpm sync:patch` + 重启）
+| 命令 | 作用 |
+|---|---|
+| `pnpm install` | 装依赖 + 自动 setup-dsh-links（DSH 源码在 `../dsh/`） |
+| `pnpm setup:dsh` | DSH 源码目录不在默认位置时手动重定向 |
+| `pnpm build` | esbuild 出 `dist/unwr-novel.mjs` + `dist/unwr-web.mjs` |
+| `pnpm build:watch` | watch 模式 |
+| `pnpm sync:patch` | 把 `profiles/web/cordis.patch.yml` 同步到 `~/.dsh/profiles/web/` |
+| `pnpm build:profile` | build + sync:patch 一步到位 |
+| `pnpm typecheck` | tsc 严格模式（0 错为门槛） |
+| `pnpm test` | vitest 全量（**注意：全量耗时 18-25s**；CI 用 `pnpm test --run <spec>` 跑单个 spec） |
+| `pnpm test:tools` | **工具本身探针**：38 发按编排时序打 28 个工具 + 探参数坑（无需真飞书） |
+| `pnpm test:setup-base` | 在飞书创建一个干净测试 Base（13 表 + 预置数据）；输出 `UNWR_TEST_BASE=<token>` |
+| `pnpm test:e2e` | 端到端生命周期 + 错误分支（需 `UNWR_TEST_BASE`） |
+| `pnpm test:agent` | 全链路编排（564s，DSH headless 跑完整写一部短篇）；无需 playwright |
+| `pnpm smoke` | feishu 包 spawn smoke（验 lark-cli 链路） |
+| `pnpm verify:bundle` | 校验 dist 产物 + 插件可见性 |
+| `pnpm pack:plugin` | 离线打包（不发布）；用于分发场景 |
 
-### 委托时的上下文传递
+---
 
-spawn provider 的 `inheritsParentContext = false`：子代理是**全新会话，看不到主对话**。
-委托 prompt 必须自带作品名或 workToken、章节号、涉及的人物/场景、用户的原始约束
-（见 `WRITING_CONVENTIONS` 第 5 条）。只写「改一下第三章」会让子代理选错作品或章节。
+## 环境变量速查
 
-## 开发期踩坑记录
+| 变量 | 必填 | 用途 |
+|---|---|---|
+| `UNWR_ROOT` | 必填 | 指向本仓库绝对路径（cordis.yml 用 `!!js process.env.UNWR_ROOT` 拼插件绝对路径；未设置则报错） |
+| `UNWR_LARK_BIN` | 可选 | lark-cli 可执行文件绝对路径。留空时插件走 env → Windows 常见安装位置 → PATH 三级回落 |
+| `UNWR_TEST_BASE` | e2e 必填 | 测试用飞书 Base token（`pnpm test:setup-base` 一次性产出） |
+| `UNWR_TEST_SPACE` | 可选 | 测试用飞书知识空间 ID（默认走 search） |
+| `UNWR_DEBUG_SELFHEAL` | 可选 | `=1` 时 selfheal 退避过程会 `console.log`（默认仅 `console.warn`） |
+| `UNWR_STATE_FILE` | 可选 | 覆盖作品注册表路径（默认 `~/.unwr/work-state.json`；仓库外，隐私红线） |
+| `DSH_PERMISSION_MODE` | headless 必填 | `=danger-full-access`（无 UI 无人审批） |
+| `DSH_TELEMETRY_DISABLED` | headless 必填 | `=1`（关遥测） |
 
-技术选型与实现阶段实测，均已由适配层屏蔽：
+---
 
-1. `@file` 只接受**相对路径**，绝对路径报 `unsafe file path`
-2. `--json` **不支持 stdin**，仅 `--content`/`--pattern` 支持
-3. 长 JSON **禁止内联**（伏笔表 schema 内联直接失败）
-4. shell 单引号里 `\n` 是字面量，正文**必须**文件传参
-5. `record-batch-update` 用 **map**，`batch-create` 用 **array**
-6. `docs` 域响应比 `base` 域多一层 `data.document` 包裹
-7. `docs +update` 的 `document` 与 `result` 是**平级**的
-8. `--limit` 上限 200（非 ndjson 格式），长篇连载需分页
-9. `--title` 会覆盖内容中同名的 `#` 标题（章标题由 title 承担，正文只用 `##`）
-10. `record-list` 返回 `record_id_list`，与 `data` 逐行对应
-11. `field-list` 的字段在 `data.fields`（不是 `data.items`）
-12. `link` 字段**只能用 table_id**，不能用表名；且需在建表后单独创建
-13. link 字段创建**偶发瞬时失败**，重跑即成功（脚本内已加 3 次退避重试）
-14. 字段名不属于该表时报 `800030201 not_found`——以 `init-work.ts` 为单一真源，勿在飞书手工改名
-15. **link 字段读回只有 record id**（`[{id:'recXX'}]`），不含可读值；
-    要拿"第几章"必须先建立 `record_id → 章节号` 映射（一致性检查踩过此坑）
-16. **Base 写入后有约 1 秒索引延迟**：实测 27 条记录时 t+668ms 查不到、t+1675ms 才查到。
-    后果：创建章节后立刻做冲突检测会误判"无冲突"，导致重复创建同一章节号。
-    `writeChapter` 已内置 `awaitVisible()` 轮询兜底
-17. 飞书会把**短时间内连续编辑聚合为一个版本**——测试不能断言"每次编辑一个版本"
-18. `--page-size` 上限 20、`--limit` 上限 200（非 ndjson 格式）
-19. 错误响应形如 `{"ok":false,"error":{...}}`，解析信封时**不能**用 `lastIndexOf('{')`
-    （会截到嵌套的 error 对象，把真实错误误报为"无法解析输出"）
-20. **update 同样有读一致性延迟**（不只 create）——写后立即查询可能读到旧值，
-    测试需 settle 等待；产品语义上接受最终一致
-21. `drive +search` 无 `--limit`（是 `--page-size` 1-20），
-    结果在 `data.results[]`（`result_meta` 内含 token/url），标题在 `title_highlighted`
-    且**含高亮 HTML 标签需剥离**
-22. DSH output schema 的嵌套 object **必须**写 `additionalProperties: false`
-    且给出 `properties`，否则类型推导失败（缺前者报 missing，缺后者推导为 never）
+## 已知硬坑（踩过的，写在这里防复发）
 
-## 环境变量
+1. **link 写入后服务端可能静默丢弃**——飞书 `record-batch-update` 对刚创建的记录回填 link 字段曾 60% 静默失败（返回 ok:true 但数据没落）。**唯一防御=回填后按 ID 读回验证**（`record-get` 传**真实表 id** 而非表名），验证不过按 3s/6s/9s 退避重试。落地为 `feishu/base.ts` 的 `updateRecordsWithSelfHeal`。
+2. **写后索引延迟 ~6s+**——`record-list` 查不到刚建的记录，但按 ID `record-get` 立即可见；任何"写后立即查"必须用进程内写缓存或退避。
+3. **`record-list --field-id` 传字段名时 link 字段投影静默 ignore**——link 表查询拉全字段本地处理。
+4. **跨段 `str_replace` 必败**——lark-cli `--pattern` 只匹配块内连续文本；跨段落/多行必须用 `block_replace` + `--start-block-id` / `--end-block-id`（`feishu/docs.ts` 的 `BlockTarget = string \| BlockRange` 已封装）。
+5. **DSH web profile 必须重启**——cordis patch 不热重载。改完 `cordis.patch.yml` → `pnpm sync:patch` → 必须重启 3080 实例。
+6. **DSH 依赖必须装根目录**——`@deepseek-ai/cordis` / `dsh-tools` / `dsh-tool-subagent` 装在 `packages/novel/` 下会导致宿主加载时报 `ERR_MODULE_NOT_FOUND`（已实测）。`package.json` 用相对路径 link 到 `../../dsh/...`；DSH 源码目录不同时跑 `pnpm setup:dsh` 重定向。
+7. **DSH web server `/api` 前缀保留**——工作台 API 走 `/workbench/api/*`，dispatcher 内剥前缀归一为 `/api` 再分支匹配。
+8. **bitable 里有重名字段会静默丢值**——`matrixToObjects` 按名建键后列覆盖前列；L1 已合并读侧去重 + bootstrap 加 `repairDuplicateFields` 自愈（改名 + 按 field_id_list 对位读 + 并集回填 + 验证通过才删原列）。
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `UNWR_LARK_BIN` | `lark-cli` | lark-cli 可执行文件路径（优先级低于插件配置 `larkBin`，见下） |
-| `UNWR_MAX_CONCURRENCY` | `8` | 并发上限，避免触发飞书限流 |
-| `UNWR_TEST_BASE` | 测试库 token | 测试用作品库 |
-| `UNWR_TEST_SPACE` | 测试空间 ID | 测试用知识空间 |
+---
 
-### 指定 lark-cli 路径（Windows 必读）
+## 隐私红线
 
-lark-cli 路径按四级优先解析：
+**仓库中不得出现 `/home/maigi`、个人姓名、真实飞书 `base_token` / `space_id`**——已用 `git filter-repo --replace-text` 清理过历史。**新增代码默认用占位符**（`<TEST_BASE>`、`$UNWR_ROOT`）+ 环境变量注入。
 
-1. **插件配置 `larkBin`**——写进 profile patch 的显式声明，随部署走、可
-   `--dump-config` 检查。**DSH 沙箱可能不传播用户级环境变量**（Windows 实机
-   2026-09-03），env 不可靠时用这个
-2. 环境变量 `UNWR_LARK_BIN`
-3. **Windows 自动探测**：npm / pnpm / yarn 全局 bin、scoop shims、
-   chocolatey bin、winget WindowsApps，末位**扫描进程 PATH** 逐目录找
-   `lark-cli.cmd/.exe/.bat`。注意：PATH 扫描只对**已进入 DSH 进程 PATH**
-   的目录有效——shell rc（.bashrc 等）里追加的 PATH 对 DSH 不可见，
-   那种安装位置必须用 `larkBin` 绝对路径
-4. 裸名 `lark-cli`（Windows 经 cmd /c 走 PATH；POSIX 直接 PATH）
+`work-state.json` 落在 `~/.unwr/`（**仓库外**），避免真实 base_token 进工作区；测试环境自动改 tmpdir。
 
-1/2 写**裸名**时 Windows 上也会先按 3 的目录解析为绝对路径；
-`verbose: true` 时启动日志打印解析结果与来源
-（`插件配置 larkBin` / `环境变量` / `自动探测` / `PATH 裸名`）。
+---
 
-在用户 profile patch 里按 id 覆盖 unwr-novel 行配置（**整行替换，须重述全部键**）：
+## 致谢
 
-```yaml
-- insert:
-    - id: unwr-novel
-      name: "@laplaceliu/unwr/dist/unwr-novel.mjs"
-      config:
-        readOnlySafeMode: true
-        larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
-```
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：IoC 容器 / 工具注册 / 多代理 spawn 基建
+- [lark-cli](https://www.npmjs.com/package/@larksuite/cli)：飞书官方 CLI
+- [Vitest](https://vitest.dev/)：测试基建
+
+## License
+
+MIT

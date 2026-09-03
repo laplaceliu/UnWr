@@ -1,265 +1,472 @@
-# UnWr 使用指南
+# 使用手册
 
-> 装好之后怎么用。本文按"想做什么 → 怎么做 → 背后发生了什么"的顺序组织。
-> 阅读前提：已完成 [安装指南](./install.md) 的全部步骤。
-
----
-
-## 一、TL;DR —— 一条命令开始
-
-工作台启动后，浏览器打开 **http://127.0.0.1:3080/workbench**，在输入框说人话就行。
-
-> "帮我想一部东方玄幻长篇，主角是一个被灭门的少年，主线是复仇 + 觉醒；先列第一卷大纲。"
-
-主编排官（Orchestrator）会接管，调度大纲官（Outliner）出大纲，写进飞书；
-章节写完后主编排官会自动做记忆沉淀（摘要 + 事件索引 + 人物状态快照），
-后续章节直接说"写第二章"即可，不需要重述设定。
+本文档面向**主编排官**（DSH 主会话内的模型）与人值守时的运维/调试人员。所有功能都以 DSH 主会话 + `novel_*` 工具调用落地；不需要浏览器。
 
 ---
 
-## 二、概念：角色即权限
+## 1. 整体编排流程
 
-UnWr 不是单一 LLM，而是一个**主编排官 + 7 个子角色**的矩阵。每个角色对飞书的读写范围不同，工具集不同。
-
-| 角色 | 代号 | 干什么 | 写权限 |
-|------|------|--------|--------|
-| **主编排官** | Orchestrator | 理解意图、调度、记忆维护 | 间接（通过子角色） |
-| **世界观设定官** | Worldkeeper | 设定词条、自洽性检测 | 设定表、设定文档 |
-| **人物官** | Characterkeeper | 人物档案、章末状态快照、崩坏检测 | 人物/状态/关系表 |
-| **大纲官** | Outliner | 卷章大纲、剧情线、伏笔埋收 | 卷/章节/剧情线/伏笔表 |
-| **起草官** | Drafter | 生成章节正文 | 章节正文文档、章节表 |
-| **改稿官** | Reviser | 句段级改写、视角/文风切换 | 章节正文文档 |
-| **评审官** | Critic | 只诊断不代笔 | 检查问题表、报告文档 |
-| **救援官** | Rescuer | 卡文破局与分支生成 | 候选分支表 |
-
-> 详细定义见 [`docs/requirements/03-agent-matrix.md`](../requirements/03-agent-matrix.md)。
-> 工具按"智能体意图"封装，CLI 命令细节完全屏蔽，详见 [`docs/tech/01-tech-selection.md`](../tech/01-tech-selection.md)。
-
-### 什么时候要手动指定角色？
-
-| 你说 | 自动路由到 |
-|------|-----------|
-| "帮我想个修炼体系" | 设定官 |
-| "沈砚这个人物立不住" | 人物官 + 评审官 |
-| "列一下第一卷的章节大纲" | 大纲官 |
-| "写第三章" | 起草官（自动组装上下文） |
-| "这段太平了，改紧凑点" | 改稿官 |
-| "帮我看看这章有什么问题" | 评审官 |
-| "卡住了，接下来怎么走" | 救援官 |
-| "自动写完这一卷" | 大纲官 → 起草官（循环）→ 记忆沉淀 |
-
-也可以用 `@改稿官` 显式接管，跳过主编排：
-
-> "@改稿官 把这段对话改冷峻些，减少心理描写。"
-
----
-
-## 三、第一部作品：从 0 到第一章
-
-### 3.1 创建作品库（首次）
-
-每个作品对应一个飞书 base + 一个知识空间（用于存章节正文文档）。
-
-**方式 A：通过工作台 UI**
-工作台首页 → 「新建作品」→ 填名字、题材、主线梗概 → 自动建库 + 13 张表 + 第一个卷壳。
-
-**方式 B：通过 CLI**（自动化、脚本友好）
-
-```bash
-node --import tsx/esm packages/schema/scripts/init-work.ts <base_token>
-# base_token 是你已经在飞书建好的多维表格的 token
-# 脚本会建齐 13 张表 + 字段 + link 关联
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  DSH 主会话 = 主编排官（不单独注册）                               │
+│  入口：用户提问 → 主会话判断意图 → 调 1 个 novel_agent_* 委托工具  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │ toolFilter 是硬约束
+        ┌────────┬────────┬────┴────┬────────┬────────┬────────┐
+        ▼        ▼        ▼         ▼        ▼        ▼        ▼
+   世界官   人物官   大纲官   起草官   改稿官   评审官   救火官
+        │        │        │         │        │        │        │
+        ▼        ▼        ▼         ▼        ▼        ▼        ▼
+   28 个 novel_* 工具（受 persona 约束 + toolFilter 硬约束）
+        │
+        ▼
+   飞书 bitable (13 表) + docx (章节正文)
 ```
 
-### 3.2 设定的录入
+**编排规则**（写在 `cordis.patch.yml` 顶层 + 各 persona）：
 
-不需要一次写完。先说题材和大方向，设定官会自动开词条；后续追加。
-
-> "东方玄幻，世界观叫'九霄大陆'，修炼体系分炼体→筑基→金丹→元婴→化神，每境界九层。主角门派叫青云宗。"
-
-设定官会创建「九霄大陆」「修炼体系」「青云宗」等词条，并建立引用关系。
-
-### 3.3 大纲规划
-
-> "我想写一部 80 万字的长篇，分 4 卷，第一卷叫'灭门之夜'，共 12 章。把第一卷大纲列出来。"
-
-大纲官会建卷记录、章节记录（仅大纲要点，无正文），并在 wiki 树里建目录。
-
-### 3.4 写第一章
-
-> "写第一章：灭门之夜。"
-
-主编排官会做这些事（你不用关心细节）：
-
-1. **上下文组装**（E2 顺序）：
-   近距原文（前一章，这里是空的）→ 本章大纲 → 出场人物档案+状态 → 相关设定 → 未回收伏笔 → 远期摘要
-2. **委派起草官**生成正文
-3. **回写索引**：章节表更新字数/状态，事件表追加本章事件，伏笔表如有新增则登记
-4. **触发记忆沉淀**：本章摘要写入卷摘要表，人物状态快照写入人物状态表
-
-### 3.5 改稿
-
-任何时候选中一段话：
-
-> "这段对话太现代了，换成古白话风。"
-
-改稿官会按 `str_replace`（句级）或 `block_replace`（段落/场景级）就地改写，**不会重写全章**。
-
-> ⚠️ **跨段匹配会自动拒绝**：`str_replace` 只匹配块内连续文本，跨段落属 `block_replace` 职责。如果工具报错"match 跨段落（含 \n\n）"，说明你给的内容需要按段落/场景走 block 替换。
-
-### 3.6 评审
-
-> "帮我评审第一章，看看有没有人设崩坏或伏笔遗漏。"
-
-评审官只读不写，输出问题清单与建议；要修复的话交给改稿官（用户主动）或主编排官（自动模式）。
-
-### 3.7 写第二章
-
-> "写第二章：青云宗收徒。"
-
-主编排官会自动：
-- 读第一章摘要（不读全文，省 token）
-- 读第一章沉淀的人物状态快照（沈砚此刻的心理、伤势、修为）
-- 读未回收伏笔
-- 组装上下文交给起草官
-
-**你不需要复述设定**——分层记忆会自动接管。
+1. **每次调子代理前先 `novel_manage_work action=list` 确认当前作品**——不传 `workToken` 会用会话级默认作品（重启后从 `~/.unwr/work-state.json` 恢复）。
+2. **子代理只能看 `toolFilter.allow` 列出的工具**——例如评审官拿不到任何写工具，救火官拿不到 `novel_write_chapter`。
+3. **标签纪律**：每次调子代理传 `task` 字段时显式标注阶段标签（`# 起草` / `# 改稿` / `# 评审` / `# 沉淀`），跨子代理上下文对齐靠它。
+4. **委托范围纪律**：删改已有正文 → 改稿官；跨表核对不要塞给设定官；只读查询允许任意子代理并行。
+5. **chmod 沙箱**：DSH 主会话自带工具审批 + 超时；危险操作（覆盖式写入、回滚）走 `pre-execute` 钩子拦截。
 
 ---
 
-## 四、模式切换
+## 2. 工具按意图分类（28 个）
 
-工作台作品配置里可以切换模式：
+### 2.1 作品管理（1 个）
 
-| 模式 | 启用角色 | 流程 |
-|------|----------|------|
-| **协作助手**（默认） | 起草官、改稿官、救援官、设定官、人物官、大纲官 | 逐段/逐章交互，AI 出稿人改 |
-| **全自动生成器** | 大纲官 → 起草官（循环）→ 主编排沉淀记忆 | 给定题材/设定/字数，AI 自主规划并成篇 |
-| **教练评审** | 评审官 + 设定/人物/大纲官（**只读分析**） | 不生成正文，只诊断与建议 |
-| **协作＋自动** | 默认协作角色 + 一键触发全自动 | 日常协作，需要时一键「自动写完本章/本卷」 |
+| 工具 | 用途 | 备注 |
+|---|---|---|
+| `novel_manage_work` | 创建 / 查询 / 切换 / 列表作品 | `action: list\|create\|get\|switch`；维护会话级默认作品 |
 
-切换 = 修改作品表的"写作模式"字段；不需要重启 DSH，但下一次对话生效。
+**典型用法：**
 
----
+```json
+// 第一次进入：列已有作品
+{ "action": "list" }
 
-## 五、记忆是怎么工作的
+// 找不到？直接新建
+{ "action": "create", "workToken": "<BASE_TOKEN>", "name": "洗骨录", "genre": "中文网文", "subgenre": "玄幻", "scale": "长篇连载", "mode": "协作助手", "pov": "第三人称限知", "targetWords": 1000000 }
 
-UnWr 在每章写完后会自动维护三层记忆（**用户不需要管**）：
+// 切换默认作品
+{ "action": "switch", "workToken": "<BASE_TOKEN>" }
 
-| 层级 | 内容 | 存在哪 | 何时写入 |
-|------|------|--------|---------|
-| **G1 摘要** | 卷/全书的滚动摘要 | 卷摘要表 | 每章写完后追加 |
-| **G2 事件索引** | 本章发生的关键事件 | 事件表 | 每章写完后追加 |
-| **G3 人物状态快照** | 章末每位出场人物的状态 | 人物状态表 | 每章写完后生成 |
-
-**为什么不用每次读全文？** 长篇写到第 80 章时，全文 ≈ 80 万字，模型上下文塞不下。
-分层记忆保证：
-- 起草下一章时，近 K 章原文 + 远期摘要拼起来够用
-- 人物状态直接按章节号定位，不必全文检索
-
-**跨重启的"上次作品"恢复**：主编排官会自动记住你最后在编辑哪部作品。
-新开会话后直接说"继续写"，无需重新指定作品名——除非你换过机器或清过 `~/.unwr/work-state.json`。
-
----
-
-## 六、调试与排错
-
-### 6.1 工具体检（不走 LLM）
-
-任何工具行为异常时，先跑这个：
-
-```bash
-pnpm test:tools
+// 后续所有工具调用都可省 workToken（除非切到新作品）
 ```
 
-会按编排时序发 38 发探针覆盖 26/26 工具，逐项打 ✓/✗ + JSON 汇总。
-首跑就能抓到大部分"工具坏了"型 bug（如参数超限、字段名拼错）。
+> **作品注册表**：`~/.unwr/work-state.json`（仓库外，隐私红线）。重启 DSH 进程后 `lastWorkToken` 自动恢复；list 时本地独有条目标 `source: 'local'` + warnings（飞书搜索索引分钟级延迟是已知现象）。
 
-### 6.2 看 selfheal 退避过程
+### 2.2 实体管理（3 个）
 
-飞书 link 列写后有约 6 秒索引延迟，UnWr 自带 3s/6s/9s 三轮退避。
-默认只在最后失败时打 warn，过程中完全静默；想看过程：
+| 工具 | 用途 |
+|---|---|
+| `novel_manage_setting` | 设定词条 CRUD（地理 / 势力 / 规则 / 历史 / 物品 / 功法） |
+| `novel_manage_character` | 人物 CRUD（姓名 / 别名 / 角色定位 / 首次出场章节） |
+| `novel_manage_relation` | 人物关系 CRUD（亲属 / 师徒 / 对手 / 暧昧…） |
 
-```bash
-UNWR_DEBUG_SELFHEAL=1 dsh web --profile web
-# 或在 .env.local 加 UNWR_DEBUG_SELFHEAL=1
+**典型用法：**
+
+```json
+// 新增人物
+{ "action": "upsert", "name": "陆铮", "alias": "陆小侯爷", "role": "主角", "firstAppearanceChapter": 1 }
+
+// 同一关系
+{ "action": "upsert", "type": "师徒", "characterA": "陆铮", "characterB": "白衍", "intensity": 5, "note": "开篇第二章拜师" }
+
+// 查本卷用到的设定（带 link 拉全字段本地筛）
+{ "action": "query", "category": "功法" }
 ```
 
-### 6.3 类型检查
+> **persona 限 action=query**：设定官 / 人物官子代理调 `novel_manage_character` 只能 `query`，不能 `upsert`——避免跨子代理的并发写入污染。
 
-```bash
-pnpm typecheck
+### 2.3 上下文构建（1 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_build_context` | 拼装分层上下文（L0 元数据 / L1 章节 / L2 卷 / L3 全书），含题材指引 `writingGuide` |
+
+**典型用法：**
+
+```json
+{ "chapterNo": 12 }   // 返回约 30-80KB 结构化上下文
 ```
 
-改完 DSH 接口或 schema 后必跑，零错误才算完。
+返回结构：
 
-### 6.4 域级 e2e（需要真实飞书测试库）
+- `meta`：作品名 / 题材 / 子题材 / 写作模式 / 视角
+- `writingGuide`：根据题材预设生成的写作指引（节奏 / 爽点密度 / 钩子强度 / 红线）
+- `chapters[]`：当前章前后各 3 章的标题 + 字数 + 大纲 + 摘要
+- `volumes[]`：当前卷及相邻卷的主题 + 章节范围 + 状态
+- `activeCharacters`：当前章出场人物的状态快照 + 关系网络
+- `pendingForeshadows`：未回收的伏笔清单
+- `recentEvents`：最近 10 条剧情事件
+- `recalledMemories`：与当前章相关的 L1 / L2 / L3 记忆
 
-```bash
-pnpm test:setup-base    # 一次性：建测试库 + 13 张表 + 写 .env.local
-pnpm test:e2e           # 跑需要 UNWR_TEST_BASE 的所有用例
-pnpm test               # 跑全部（未设 UNWR_TEST_BASE 时域级用例自动 skip）
+> **不传 `chapterNo`** 自动取作品表 `current_chapter` 字段。
+
+### 2.4 章节正文（4 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_write_chapter` | 起草新章（含 `cast` 参数→双向写入章节表.出场人物 + 人物表.出场章节） |
+| `novel_read_chapter` | 读章节正文（`mode: full\|outline\|search`） |
+| `novel_append_chapter` | 追加正文到章末（分批起草 / 救火补全） |
+| `novel_list_scenes` | 列本章场景（按段落 / 空行切分，含 sceneId） |
+
+**典型用法：**
+
+```json
+// 写第 12 章
+{
+  "chapterNo": 12,
+  "title": "陆铮初入听剑阁",
+  "content": "## 场景一：入门考核\n\n陆铮踏进听剑阁的正门……\n\n## 场景二：剑诀初试\n\n……",
+  "cast": ["陆铮", "白衍", "周长老"]   // 双向写入；写章优先于 cast 警告
+}
+
+// 读章节大纲
+{ "chapterNo": 12, "mode": "outline" }
+
+// 搜章节正文（关键词高亮）
+{ "chapterNo": 12, "mode": "search", "query": "听剑阁" }
+
+// 列场景（先看再改）
+{ "chapterNo": 12 }
 ```
 
-### 6.5 智能体端到端（需要 headless profile）
+> **写章前先 `novel_build_context`**——`writingGuide` 是题材约束的唯一来源，违反它会触发评审官的红线。
+> **正文首行必须是 H1 章标题**（`# 第12章 ……`）——工具会规范化；其余段落以 `## 场景N:……` 划分。
+> **`cast` 必传**——人物官子代理靠这个反向更新人物表.出场章节；名字尾随括号（`陆铮（不在场）`）自动拆分。
 
-```bash
-pnpm test:agent
-# ~9 分钟跑完整链路；驱动 7 个角色写一章 + 沉淀记忆
-# 验收脚本读报告尾行的 UNWR_WORK_BASE 抓真实落库结果
+### 2.5 改稿与版本（4 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_revise_chapter` | 改稿（`action: patch\|insert_after\|expand`）；按段落 / 块 / 块区间定位 |
+| `novel_list_scenes` | 同上（与改稿配套：先看场景再改） |
+| `novel_get_chapter_history` | 列章节修订历史（含 revisionId） |
+| `novel_restore_chapter` | 一键回滚到任一历史版本（改稿安全网） |
+
+**典型用法：**
+
+```json
+// 精确替换某段（in-paragraph str_replace；含 \n 必败，走 patch + startBlockId/endBlockId）
+{
+  "action": "patch",
+  "chapterNo": 12,
+  "match": "陆铮踏进听剑阁的正门",
+  "substitute": "陆铮踏进听剑阁的东侧门",
+  "scene": "场景一：入门考核"
+}
+
+// 跨段落改：startParagraph/endParagraph（按段落定位）
+{
+  "action": "patch",
+  "chapterNo": 12,
+  "match": "陆铮应了一声，转身离去。\n\n周长老目送他远去。",
+  "substitute": "陆铮沉默片刻，点了点头。\n\n周长老轻轻叹了口气。",
+  "startParagraph": 5,
+  "endParagraph": 6
+}
+
+// 块区间（推荐）：按 block_id 兄弟块区间定位
+{
+  "action": "patch",
+  "chapterNo": 12,
+  "match": "……",
+  "substitute": "……",
+  "startBlockId": "blk_abc",
+  "endBlockId": "blk_def"
+}
+
+// 在某块后插入（expand 不支持区间）
+{
+  "action": "insert_after",
+  "chapterNo": 12,
+  "blockId": "blk_abc",
+  "newBlock": "……新增段落……"
+}
+
+// 整段扩写（保留 + 在末尾追加）
+{
+  "action": "expand",
+  "chapterNo": 12,
+  "scene": "场景一：入门考核",
+  "appendix": "（续）……"
+}
+
+// 看历史
+{ "chapterNo": 12 }
+
+// 回滚
+{ "chapterNo": 12, "revisionId": "rev_20260903_xxx" }
 ```
 
-### 6.6 常见报错速查
+> **零 I/O 守卫**（执行前拒错的典型）：
+> - `match` 含 `\n` 但未指定 `startBlockId/endBlockId/startParagraph` → "match 跨段落，请改用块区间"
+> - `startBlockId/endBlockId` 与 `startParagraph/endParagraph` 混用 → 拒错
+> - `expand` + 区间 → 拒错（expand 是单点插入）
+> - 区间顺序倒置 → 拒错
+>
+> **改稿完成后必须 `novel_mark_chapter_memories_stale`**——L1 章节级记忆与正文不一致会让后续一致性检查误报。
 
-| 报错 | 原因 | 修复 |
-|------|------|------|
-| `MissingCordisService: cannot get property "webServer" without inject` | 插件访问 ctx.webServer 但没声明 inject | 检查 `packages/web/src/plugin.ts` 顶部是否有 `export const inject = ['webServer']` |
-| `webserver: duplicate prefix route "/api"` | `/api` 是 DSH 保留字 | 把 API 挂到 `/workbench/api` 前缀，dispatcher 里归一回 `/api` |
-| `tool returned: must be an array` + 模型反复重试 | 模型记不住扁平字段 | 工具 description 末尾贴最小可工作 JSON 示例，schema 用 `oneOf` 接可疑形态进 execute 抛自纠正 Error |
-| `事件表 link 回填未生效，已重试 3 次` | 飞书 link 列写后索引延迟 | 这是 selfheal 退避耗尽，**用 `UNWR_DEBUG_SELFHEAL=1` 看过程**；若稳定复现，去飞书 UI 检查表里是否有重名字段 |
-| `patch 失败：cli failed with exit code 1` + 看不出原始错误 | match 跨段落但 `str_replace` 不允许 | 改用 block 级（段落/场景）或走块区间 `--start-block-id` + `--end-block-id` |
-| `novel_manage_work(action=list)` 返回空列表 | 刚建的 base 还没被 drive 搜索索引到 | 等 5-10 分钟；UnWr 会在结果末尾列本地已知作品作兜底（source: local） |
-| `lark-cli status` 无权限 | 飞书应用没给相应 scope | 去 [飞书开发者后台](https://open.feishu.cn) → 应用 → 权限管理，加上 `base:app:readonly` 等 |
-| `npx dsh web` 启动后 `curl /workbench` 502 | 插件 bundle 未构建或路径错 | `pnpm build && pnpm sync:patch --force`，重启 |
+### 2.6 记忆沉淀（5 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_update_summary` | 更新章节摘要（L1：章节级记忆） |
+| `novel_record_character_state` | 章末人物状态快照（地点 / 状态 / 持有物品） |
+| `novel_record_event` | 剧情事件（含 `chapter` link；`is_turning_point` 标记转折） |
+| `novel_upsert_book_summary` | 卷 / 全书摘要 query\|upsert 合一（按标题去重） |
+| `novel_mark_chapter_memories_stale` | 章节改稿后批量标记忆陈旧 |
+
+**典型用法：**
+
+```json
+// 章节摘要（扁平字段，不是数组）
+{
+  "chapterNo": 12,
+  "scene": "听剑阁入门",
+  "events": [{ "summary": "陆铮通过入门考核" }, { "summary": "白衍暗访听剑阁" }],
+  "characterChanges": [
+    { "character": "陆铮", "from": "民间游侠", "to": "听剑阁外门弟子" }
+  ],
+  "newInfo": "听剑阁入门考分三关：剑意、剑招、剑心",
+  "newForeshadows": ["陆铮的剑心藏有异象"],
+  "endState": "陆铮正式入门，白衍在暗处观察",
+  "freeform": ""
+}
+
+// 章末人物状态（人物官子代理调用）
+{ "chapterNo": 12, "character": "陆铮", "location": "听剑阁", "physicalState": "轻微疲劳", "mentalState": "警觉", "inventory": ["灰布剑", "周长老手令"] }
+
+// 事件
+{ "chapterNo": 12, "name": "陆铮通过入门考核", "summary": "三关皆过", "participants": ["陆铮", "周长老"], "isTurningPoint": true }
+
+// 卷摘要（先查再写，避免堆重复行）
+{ "action": "query", "level": "卷", "titleContains": "听剑卷" }
+
+// 标记忆陈旧
+{ "chapterNo": 12 }
+```
+
+> **`newInfo` 必须是扁平对象**（不是数组，不是嵌套）；常见错误形态 `{item, newForeshadows, endState, freeform}`——工具 description 末尾给了可复制的正确 JSON 示例。
+> **事件并发写入会丢 link**——5 条 record_event 同 step 发出时 link 回填 60% 静默失败（已实测）；**必须串行或走 selfheal 退避**。
+
+### 2.7 一致性检查（3 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_run_consistency_check` | 跑设定 / 人设 / 伏笔 / 时间线 / 红线 全量检查 |
+| `novel_get_semantic_check_pack` | 取本章的语义检查包（送评审官用） |
+| `novel_get_review_focus` | 取本作题材的评审重点（权重 + 阻断阈值 + 题材专项） |
+
+**典型用法：**
+
+```json
+// 全量检查（耗时 5-15s，按章节数据量）
+{ "chapterNo": 12 }   // 不传则全作品
+
+// 取评审重点（开评前必调）
+{}
+
+// 取语义检查包（送评审官 persona 阅）
+{ "chapterNo": 12 }
+```
+
+返回结构：
+
+- `issues[]`：按题材权重排序；`blocking = severity >= blockingThreshold`
+- `genreFocus`：题材专项评估点（webnovel=爽点/钩子；literary=人物/主题；scriptwriting=场景节拍/对白节奏）
+- `contentRedLines`：三档（严禁 / 高危 / 审慎），前两档全题材阻断定稿
+
+> **三档红线**：
+> - 严禁（呈现即违规，无合法框架）
+> - 高危（可写但须满足强约束）
+> - 审慎（技巧规避即可，仅提示不阻断）
+>
+> 完整清单见 `packages/novel/src/genre/taboos.ts`。
+
+### 2.8 大纲 / 伏笔 / 剧情线 / 分支（4 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_manage_outline` | 章节大纲 CRUD |
+| `novel_manage_foreshadow` | 伏笔 CRUD；类型（主线 / 支线 / 人物 / 物品）；状态（已埋设 / 已回收 / 已作废） |
+| `novel_manage_plotline` | 剧情线 CRUD；推进状态（铺垫 / 推进 / 高潮 / 收束 / 完结） |
+| `novel_manage_branch` | 候选分支 CRUD（写章前的多版本规划；状态：候选 / 已采用 / 已否决） |
+
+> **大纲官子代理同时持有这 4 个工具**——卷规划场景下与 `novel_build_context` 配合使用。
+
+### 2.9 字数与节奏（1 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_calculate` | 字数 / 节奏 / 爽点密度 / 线索公平 等组合指标 |
+
+```json
+{ "chapterNo": 12 }
+// 或：
+{ "metrics": ["words", "dialogue_ratio", "stimulus_density", "clue_fairness"] }
+```
+
+### 2.10 高阶规划（3 个）
+
+| 工具 | 用途 |
+|---|---|
+| `novel_breakthrough_planning` | 突破性章节规划（爽点密度突变 / 视角切换 / 时间跳跃） |
+| `novel_advance_character_arc` | 推进人物弧光（成长 / 转折 / 黑化 / 救赎） |
+| `novel_record_chapter_tension` | 记录本章张力评级（1-5 星）+ 备注 |
 
 ---
 
-## 七、数据模型速览（用户视角）
+## 3. 7 个子代理的职责与编排规则
 
-完整 13 张表见 [`docs/requirements/02-feishu-data-model.md`](../requirements/02-feishu-data-model.md)；
-这里只给一张"我该查哪儿"表：
+### 世界官（`novel_agent_worldkeeper`）
 
-| 我想看 | 表 | 关键字段 |
-|--------|----|---------|
-| 作品总览 | 作品表 | 标题、题材、写作模式、当前卷、当前章节 |
-| 章节大纲 | 章节表 | 章节号、标题、大纲要点、状态、出场人物 link |
-| 章节正文 | 云文档 | wiki 节点 = 章节号 |
-| 人物是谁 | 人物表 | 姓名、身份、阵营、修为、人物小传 docx |
-| 人物此刻状态 | 人物状态表 | 人物 link、章节号、状态摘要、所在地点 |
-| 设定词条 | 设定表 | 类别、词条名、内容摘要、长文 docx |
-| 伏笔埋/收 | 伏笔表 | 描述、埋设章节、回收章节、重要度 |
-| 事件流水 | 事件表 | 章节号、事件描述、涉及人物 link |
-| 剧情线 | 剧情线表 | 名称、起始章节、结束章节、状态 |
-| 卷摘要 | 卷摘要表 | 卷 link、摘要文本、字数 |
-| 一致性检查问题 | 检查问题表 | 章节 link、问题类型、严重度 |
-| 救援候选分支 | 候选分支表 | 触发章节、分支描述、可选度 |
+- **职责**：设定 / 伏笔 / 剧情线 增删改
+- **调用时机**：主编排官发现需要新增/修订设定或伏笔时
+- **toolFilter.allow**：`novel_manage_setting`、`novel_manage_work`、`novel_manage_foreshadow`、`novel_manage_plotline`
+- **persona 关键词**：`# 设定`、`# 伏笔`、`# 剧情线`
+
+### 人物官（`novel_agent_characterkeeper`）
+
+- **职责**：人物 / 关系 CRUD；章末状态快照
+- **调用时机**：起草官完成一章后录入人物快照；需新增人物时
+- **toolFilter.allow**：`novel_manage_character`、`novel_manage_relation`、`novel_record_character_state`、`novel_manage_work`（仅 query）
+- **persona 限 `action=query`**：调 `novel_manage_character` / `novel_manage_relation` 时只能 `query`，不能 `upsert`——避免跨子代理并发写入
+- **persona 关键词**：`# 人物`、`# 关系`、`# 章末状态`
+
+### 大纲官（`novel_agent_outliner`）
+
+- **职责**：大纲 / 分支规划
+- **调用时机**：主编排官做卷规划时
+- **toolFilter.allow**：`novel_manage_outline`、`novel_manage_branch`、`novel_manage_foreshadow`、`novel_manage_plotline`、`novel_manage_work`（仅 query）
+- **persona 关键词**：`# 大纲`、`# 分支`
+
+### 起草官（`novel_agent_drafter`）
+
+- **职责**：写章正文 + 配套场景 / 记忆 / 计算
+- **调用时机**：主编排官决定起草某章时
+- **toolFilter.allow**：`novel_build_context` + 全套 chapter / revision / memory / 上下文 / 计算 / 规划工具 + `novel_manage_work`（仅 query）
+- **关键约束**：写章前必须 `novel_build_context` 取 `writingGuide`；`cast` 必传
+- **persona 关键词**：`# 起草`
+
+### 改稿官（`novel_agent_reviser`）
+
+- **职责**：微调刚写完的章节（局部改写 / 扩写 / 润色 / 整段重写）
+- **调用时机**：起草官完成后主编排官认为需打磨细节
+- **toolFilter.allow**：`novel_revise_chapter`、`novel_list_scenes`、`novel_read_chapter`、`novel_get_chapter_history`、`novel_restore_chapter`、`novel_manage_work`（仅 query）
+- **persona 关键词**：`# 改稿`
+
+### 评审官（`novel_agent_critic`）
+
+- **职责**：一致性 / 红线评审（只读 + 写检查记录）
+- **调用时机**：章稿完成后 / 主编排官认为需要审稿时
+- **toolFilter.allow**：`novel_run_consistency_check`、`novel_get_semantic_check_pack`、`novel_get_review_focus`、`novel_read_chapter`、`novel_manage_work`（仅 query）
+- **persona 关键词**：`# 评审`
+- **关键约束**：开评前先 `novel_get_review_focus` 拿本作题材的评审重点
+
+### 救火官（`novel_agent_rescuer`）
+
+- **职责**：兜底修复（重写 / 回滚 / 标记忆陈旧）
+- **调用时机**：评审官发现重大问题、救火官介入
+- **toolFilter.allow**：全套查询工具 + `novel_restore_chapter` + `novel_mark_chapter_memories_stale` + `novel_manage_work`（仅 query）
+- **persona 关键词**：`# 救火`
 
 ---
 
-## 八、提效小习惯
+## 4. 工作流示例：一次性写完一章
 
-1. **写每章前先确认大纲**。大纲不全时起草官会自己补，但补的常不如你想的准。
-2. **每 5-10 章做一次评审**。评审官只读不写，不会乱动正文，能抓出人设崩坏、伏笔遗漏、设定冲突。
-3. **改稿用块级而非全文**。"改这段对话"优于"重写这一章"——后者会丢设定一致性。
-4. **卡文先问救援官**。救援官会生成 3-5 条候选分支，比自己死磕快。
-5. **关键设定写入文档而非只放对话**。对话上下文会丢；设定表的词条会跟着作品走。
-6. **修改完飞书表结构不要忘了重建测试库**。`pnpm test:setup-base --recreate`。
+```
+1. 主编排官
+   ├─ novel_manage_work action=get    # 确认当前作品
+   └─ novel_build_context chapterNo=12  # 拿分层上下文 + writingGuide
+
+2. 起草官（novel_agent_drafter）
+   ├─ novel_list_scenes chapterNo=11   # 看前一章场景衔接
+   ├─ novel_write_chapter chapterNo=12 title=… content=… cast=[…]
+   └─ novel_mark_chapter_memories_stale chapterNo=11  # 上章记忆标陈旧（因为要补录）
+
+3. 人物官（novel_agent_characterkeeper）
+   ├─ novel_record_character_state chapterNo=12 character=陆铮 …  # 多次
+   └─ novel_record_event chapterNo=12 name=… isTurningPoint=true   # 多次
+
+4. 主编排官（沉淀 L1 记忆）
+   └─ novel_update_summary chapterNo=12 …   # 扁平字段
+
+5. 评审官（novel_agent_critic）
+   ├─ novel_get_review_focus                # 拿评审重点
+   ├─ novel_run_consistency_check chapterNo=12
+   └─ 如有 blocking：反馈主编排官 → 救火官介入
+
+6. 主编排官（定稿）
+   └─ novel_manage_work action=get → 设 current_chapter=12
+```
 
 ---
 
-## 九、下一步
+## 5. 端到端验证（`pnpm test:agent`）
 
-- 想了解每个工具的完整参数？读 [`packages/novel/src/tools/*.ts`](../../packages/novel/src/tools) 的工具描述（每条工具都自带 JSON 示例）。
-- 想自定义题材配置？读 [`docs/requirements/04-genre-presets.md`](../requirements/04-genre-presets.md)。
-- 想理解智能体怎么协作？读 [`docs/requirements/03-agent-matrix.md`](../requirements/03-agent-matrix.md)。
-- 改 DSH 接口后报类型错？读 [`docs/tech/02-dsh-integration.md`](../tech/02-dsh-integration.md)。
+564s 实测跑通一部短篇（含 5 章 / 10 人物 / 3 卷），无需 playwright。
+
+**流程：**
+
+```
+1. pnpm test:agent
+2. → scripts/run-e2e.mjs --agent
+3. → build bundle + setup-test-base.mjs --install-agent-profile
+4. → npx @deepseek-ai/dsh --profile unwr-agent "<任务>"
+5. → 报告尾行 UNWR_WORK_BASE=<token>
+6. → packages/novel/scripts/agent-verify.ts 落库验收
+   - 验证人物状态 / 事件 / 伏笔是否真实入库
+   - 不轻信模型自报
+```
+
+**实测暴露过的问题**（已修）：
+- 主会话起草后把记忆沉淀整套重做（人物状态同章同人重复 4 条）→ WRITING_CONVENTIONS 加"区分委托已沉淀"语义
+- 主会话虚报"补 3 条辅线伏笔"（起草官 toolFilter 无 foreshadow）→ 验收脚本只信落库抓到
+- 并发 5 条 record_event 同 step 发出，link 回填全失败 → selfheal 退避 + 编排层避免同表并发
+
+---
+
+## 6. 题材预设（三套）
+
+| preset_id | 中文名 | 节奏 | 爽点密度 | 钩子强度 | 线索公平 | 红线阈值 |
+|---|---|---|---|---|---|---|
+| `webnovel` | 中文网文 | 2500 字 / 章；2-4 场景 | 高（1.5） | 强制 last_para 钩子 | 2 | 3 |
+| `genre_fiction` | 类型小说 | 3500 字 / 章；3-5 场景 | 中（1.0） | 选配 | 3 | 2 |
+| `literary` | 纯文学 | 5000 字 / 章；4-6 场景 | 低（0.5） | 不强制 | 4 | 4 |
+
+**新增题材**：在 `packages/novel/src/genre/presets.ts` 加一组 `GenrePreset` 值——**统一维度，差异化取值**，无需新增字段或改流程。
+
+**题材指引（`writingGuide`）** 由 `novel_build_context` 实时生成，包含：目标字数 / 场景数 / 对话占比 / 描述占比 / 钩子策略 / 红线阈值。**所有写作决策以此为准**。
+
+---
+
+## 7. 故障排查指引
+
+| 现象 | 看哪里 |
+|---|---|
+| 工具报 `未知参数` | `packages/novel/tests/tool-schema.spec.ts`（静态契约） |
+| 工具报 `执行失败 cli exit code 1` | `pnpm typecheck` + `pnpm test` 看 vitest 回归 |
+| `novel_revise_chapter` 报 `match 跨段落` | 看 install.md §9；改用 `startBlockId/endBlockId` 区间 |
+| `novel_update_summary` 报 `newInfo must be array` | 看 usage.md §2.6；必须是扁平对象不是数组 |
+| `novel_manage_work action=list` 看不到刚建的作品 | 飞书搜索索引分钟级延迟；用 `~/.unwr/work-state.json` 兜底 |
+| 章稿写完发现 link 没回填 | 看 selfheal 退避日志；`pnpm repair-dup-fields <BASE_TOKEN>` 兜底 |
+| 一致性检查红了一堆但不知道从哪开始 | 先调 `novel_get_review_focus` 看题材权重；按权重排序处理 |
+| DSH 主会话给了模型一个看不见的工具名 | persona / WRITING_CONVENTIONS 提到的 `novel_*` 必须真实存在；看 `tests/tool-registry.spec.ts` |
+| 子代理报 `unknown tool` | 该工具不在子代理 `toolFilter.allow` 里——不要试图越权；改用其他子代理或升到主会话调 |
+
+---
+
+## 8. 进阶阅读
+
+- 数据模型：`../requirements/02-feishu-data-model.md`（13 张表 + link 关系 + 字段定义）
+- 智能体矩阵：`../requirements/03-agent-matrix.md`（7 子代理详细 toolFilter + persona）
+- 题材预设：`../requirements/04-genre-presets.md`（维度定义 + 数值表）
+- 记忆与一致性：`../requirements/05-memory-and-consistency.md`（分层记忆模型 + 红线清单）
+- 飞书 CLI 硬坑：`../requirements/01-features-and-verification.md` 第三节（@file 仅相对路径 / batch-create 不支持 link / write-then-read 延迟 / record-get 必须传表 id 不传表名 / etc）
+- 技术决策：`../tech/01-tech-selection.md` + `../tech/02-dsh-integration.md`
