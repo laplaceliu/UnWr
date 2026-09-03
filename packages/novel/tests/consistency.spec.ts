@@ -12,6 +12,7 @@ import { resolveTestBase, waitForBaseReady } from './helpers.ts'
 import { apply } from '../src/index.ts'
 import {
   checkForeshadows, checkPresence, checkTimeline,
+  classifyInjuryLevel,
 } from '../src/domain/consistency.ts'
 
 interface MinimalTool {
@@ -124,7 +125,8 @@ describe('H5 人物方位与状态（纯函数）', () => {
       ],
       titles,
     )
-    const injury = issues.find((i) => i.title.includes('伤势'))
+    // 修复后：重伤消失的 title 用「重伤」字段标识（F3 三级词典）
+    const injury = issues.find((i) => i.title.includes('重伤'))
     expect(injury).toBeDefined()
     expect(injury?.severity).toBe(3)
   })
@@ -151,6 +153,157 @@ describe('H5 人物方位与状态（纯函数）', () => {
       titles,
     )
     expect(issues).toHaveLength(0)
+  })
+
+  /* ----------- F1：人物 link 字段解析为名字（不再是 [object Object]） ----------- */
+  it('F1：人物 link 字段为 {id} 形态时，issue.title 用真实人物名', () => {
+    // 飞书 link 字段读回实测形态：[ {id: 'recXX'} ]
+    const recordIdToName = new Map([['recShenYan', '沈砚']])
+    const issues = checkPresence(
+      [
+        { '人物': [{ id: 'recShenYan' }], '章节': ['第一章'], '所在位置': '城南', '身体状况': '', '持有物品': '' },
+        { '人物': [{ id: 'recShenYan' }], '章节': ['第二章'], '所在位置': '城西', '身体状况': '', '持有物品': '' },
+      ],
+      titles, new Map(), recordIdToName,
+    )
+    const locationIssue = issues.find((i) => i.title.includes('位置'))
+    expect(locationIssue).toBeDefined()
+    expect(locationIssue?.title).toContain('沈砚')
+    expect(locationIssue?.title).not.toContain('[object Object]')
+    expect(locationIssue?.character).toBe('沈砚')
+  })
+
+  it('F1：人物 link 找不到映射时退回旧行为（保留 [object Object]，便于排错）', () => {
+    // 不传 recordIdToName 或 id 不在映射中 → 走 str() 兜底
+    const issues = checkPresence(
+      [
+        { '人物': [{ id: 'recUnknown' }], '章节': ['第一章'], '所在位置': '城南', '身体状况': '', '持有物品': '' },
+        { '人物': [{ id: 'recUnknown' }], '章节': ['第二章'], '所在位置': '城西', '身体状况': '', '持有物品': '' },
+      ],
+      titles,
+    )
+    // 兜底文案保留旧行为，便于人工排错（不应崩）
+    expect(issues.some((i) => i.title.includes('[object Object]'))).toBe(true)
+  })
+
+  /* ----------- F2：同章多快照分桶取末，只跨章比较 ----------- */
+  it('F2：同章内多次沉淀（位置变化）不检出位置矛盾', () => {
+    // 同章 2 写了 3 次沉淀：柜坊门口 → 鹤鸣楼后院 → 杂号街
+    // 这是叙事单元内的位移，不应触发"位置变化"
+    const issues = checkPresence(
+      [
+        { '人物': '翟婆子', '章节': ['第二章'], '所在位置': '杂号柜坊门口', '身体状况': '', '持有物品': '' },
+        { '人物': '翟婆子', '章节': ['第二章'], '所在位置': '鹤鸣楼后院', '身体状况': '', '持有物品': '' },
+        { '人物': '翟婆子', '章节': ['第二章'], '所在位置': '杂号街', '身体状况': '', '持有物品': '' },
+      ],
+      titles,
+    )
+    expect(issues.filter((i) => i.title.includes('位置'))).toHaveLength(0)
+  })
+
+  it('F2：同章内多次沉淀（伤势变化）不检出伤势消失', () => {
+    // 同章内从"轻伤"到"无伤"是叙事单元内的恢复
+    const issues = checkPresence(
+      [
+        { '人物': '阿史那莺', '章节': ['第二章'], '所在位置': '', '身体状况': '左手淤青', '持有物品': '' },
+        { '人物': '阿史那莺', '章节': ['第二章'], '所在位置': '', '身体状况': '疲劳', '持有物品': '' },
+      ],
+      titles,
+    )
+    expect(issues).toHaveLength(0)
+  })
+
+  it('F2：同章只取最后一条作为章末代表，跨章比较只看章末 vs 章末', () => {
+    // 章 2 末态=城西；章 3 末态=城西 → 不变不报警
+    // 但中间章 2 写过"城南"那条会被分桶掉
+    const issues = checkPresence(
+      [
+        { '人物': '沈砚', '章节': ['第二章'], '所在位置': '城南', '身体状况': '', '持有物品': '' },
+        { '人物': '沈砚', '章节': ['第二章'], '所在位置': '城西', '身体状况': '', '持有物品': '' },
+        { '人物': '沈砚', '章节': ['第三章'], '所在位置': '城西', '身体状况': '', '持有物品': '' },
+      ],
+      titles,
+    )
+    expect(issues.filter((i) => i.title.includes('位置'))).toHaveLength(0)
+  })
+
+  /* ----------- F3：伤势三级词典 ----------- */
+  it('F3：重伤消失报 severity=3 阻断', () => {
+    const issues = checkPresence(
+      [
+        { '人物': '沈砚', '章节': ['第一章'], '所在位置': '', '身体状况': '左手骨折', '持有物品': '' },
+        { '人物': '沈砚', '章节': ['第二章'], '所在位置': '', '身体状况': '行动如常', '持有物品': '' },
+      ],
+      titles,
+    )
+    const injury = issues.find((i) => i.title.includes('重伤'))
+    expect(injury).toBeDefined()
+    expect(injury?.severity).toBe(3)
+    expect(injury?.title).toContain('沈砚')
+  })
+
+  it('F3：轻伤消失只报 severity=2 提示（不阻断）', () => {
+    const issues = checkPresence(
+      [
+        { '人物': '沈砚', '章节': ['第一章'], '所在位置': '', '身体状况': '左手淤青', '持有物品': '' },
+        { '人物': '沈砚', '章节': ['第二章'], '所在位置': '', '身体状况': '行动如常', '持有物品': '' },
+      ],
+      titles,
+    )
+    const injury = issues.find((i) => i.title.includes('轻伤'))
+    expect(injury).toBeDefined()
+    expect(injury?.severity).toBe(2)
+  })
+
+  it('F3：仅含不适/疲劳的字段消失不参与检测', () => {
+    // 「疲劳;血丝眼」→ 纯不适，从不适变空也不算"伤势消失"
+    const issues = checkPresence(
+      [
+        { '人物': '沈砚', '章节': ['第一章'], '所在位置': '', '身体状况': '疲劳;血丝眼', '持有物品': '' },
+        { '人物': '沈砚', '章节': ['第二章'], '所在位置': '', '身体状况': '行动如常', '持有物品': '' },
+      ],
+      titles,
+    )
+    expect(issues.filter((i) => i.title.includes('伤'))).toHaveLength(0)
+  })
+
+  it('F3：重伤关键词优先于轻伤关键词', () => {
+    // 「左手骨折,淤青」→ severe（重伤优先）
+    expect(classifyInjuryLevel('左手骨折,淤青')).toBe('severe')
+    expect(classifyInjuryLevel('骨折')).toBe('severe')
+    expect(classifyInjuryLevel('中毒')).toBe('severe')
+    expect(classifyInjuryLevel('昏迷')).toBe('severe')
+    expect(classifyInjuryLevel('出血')).toBe('minor')
+    expect(classifyInjuryLevel('疲劳')).toBe('none')
+    expect(classifyInjuryLevel('血丝眼')).toBe('none')
+    expect(classifyInjuryLevel('头晕')).toBe('none')
+    expect(classifyInjuryLevel('')).toBe('none')
+  })
+
+  /* ----------- F3.5：否定剥离（"无伤/不痛/已愈" 视为无伤） ----------- */
+  it('F3.5：「无伤」/「不痛」/「伤已消」视为无伤', () => {
+    expect(classifyInjuryLevel('无伤;一夜未睡加重,眼有血丝')).toBe('none')
+    expect(classifyInjuryLevel('不痛')).toBe('none')
+    expect(classifyInjuryLevel('伤已消')).toBe('none')
+    expect(classifyInjuryLevel('伤不再痛')).toBe('none')
+  })
+
+  it('F3.5：「伤势未愈」/「伤仍在」= 伤仍存在，不剥', () => {
+    expect(classifyInjuryLevel('伤势未愈')).toBe('minor')
+    expect(classifyInjuryLevel('伤仍在')).toBe('minor')
+    expect(classifyInjuryLevel('左手骨折尚未痊愈')).toBe('severe')
+  })
+
+  it('F3.5：完整修复实机 bug —— 翟婆子「无伤;血丝」不应再报重伤消失', () => {
+    const issues = checkPresence(
+      [
+        { '人物': '翟婆子', '章节': ['第二章'], '所在位置': '', '身体状况': '无伤;一夜未睡加重,眼有血丝', '持有物品': '' },
+        { '人物': '翟婆子', '章节': ['第三章'], '所在位置': '', '身体状况': '疲劳,血丝眼未消', '持有物品': '' },
+      ],
+      titles,
+    )
+    // 修复前会报 severity=3「伤势消失」；修复后物理字段走否定剥离，不报警
+    expect(issues.filter((i) => i.title.includes('伤'))).toHaveLength(0)
   })
 })
 

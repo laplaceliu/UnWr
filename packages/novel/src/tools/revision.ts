@@ -1,10 +1,13 @@
 /**
  * novel_revise_chapter / novel_list_scenes / novel_get_chapter_history
+ * / novel_restore_chapter
  *
- * 改稿能力：局部改写 / 扩写 / 精确润色。视角、人称、文风切换
- * 本质上都是 replace——由模型生成新文本，工具负责精确定位与落库。
+ * 改稿能力：局部改写 / 扩写 / 精确润色 / 整段重写 / 回滚到任一历史版本。
+ * 视角、人称、文风切换本质上都是 replace——由模型生成新文本，工具负责
+ * 精确定位与落库。
  *
- * 每次改稿都会在飞书留下版本，可用 novel_get_chapter_history 回溯。
+ * 每次改稿都会在飞书留下版本，可用 novel_get_chapter_history 回溯；
+ * 改坏了可用 novel_restore_chapter 一键回滚到任意历史版本（Tier 5 安全网）。
  *
  * @module @unwr/novel/tools/revision
  */
@@ -14,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import {
   chapterHistory, listScenes, resolveChapterDoc, reviseChapter,
+  restoreChapterVersion,
 } from '../domain/revision.ts'
 import { resolveWorkToken } from './defaults.ts'
 
@@ -22,24 +26,46 @@ export function registerRevisionTools(ctx: Context): void {
   registerReviseChapter(ctx)
   registerListScenes(ctx)
   registerHistory(ctx)
+  registerRestoreChapter(ctx)
 }
 
 function registerReviseChapter(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_revise_chapter',
-    description: 'Revise an existing chapter in place. Four actions: '
-      + '"replace" rewrites a whole scene or block (use for rewriting, condensing, '
-      + 'switching POV/person/voice); "expand" inserts text after a scene or block; '
-      + '"patch" does an exact text replacement (use for polishing a sentence); '
-      + '"delete" removes a whole block (cleanup of placeholder/empty paragraphs, no content needed). '
-      + 'Locate the target by "scene" (the ## heading, RECOMMENDED) or "blockId". '
-      + 'For patch, provide "match" with the exact original text — a single-line snippet '
-      + 'from inside ONE paragraph (newlines/blank lines are rejected: patch cannot span '
-      + 'paragraphs; use replace + scene + paragraph for that). '
-      + 'To merge several consecutive paragraphs into one, use action="replace" with '
-      + 'scene + startParagraph/endParagraph (inclusive range, one call instead of '
-      + 'replace-then-delete-twice). '
-      + 'Every revision is versioned in Feishu and can be reviewed later.',
+    description: 'Revise an existing chapter in place. '
+      + '\n\nDECIDE THE SCOPE FIRST (this avoids the most common stuck-loop pattern — '
+      + 'dozens of single-block edits that keep invalidating block_ids):'
+      + '\n• Rewriting or merging SEVERAL paragraphs at once? → action="replace" + '
+      + 'scene + startParagraph/endParagraph (inclusive range, ONE call replaces the '
+      + 'whole span — the right tool for "merge these 4 paragraphs into one" or '
+      + '"rewrite this whole beat"). Block ids inside the range become invalid.'
+      + '\n• Rewriting a whole SCENE? → action="replace" + scene (no paragraph index; '
+      + 'replaces from the ## heading down to the next ## or end of doc).'
+      + '\n• Rewriting ONE paragraph? → action="replace" + scene + paragraph.'
+      + '\n• Polishing a sentence / swapping a phrase? → action="patch" + match '
+      + '(single-line snippet, no newlines, must be VERBATIM from novel_read_chapter).'
+      + '\n• Inserting new text after a scene or block? → action="expand" + '
+      + 'scene|blockId + content.'
+      + '\n• Removing a placeholder / empty paragraph? → action="delete" + '
+      + 'blockId (no content needed).'
+      + '\n\nActions: replace=rewrite target with content; expand=insert content '
+      + 'after target; patch=swap an exact text snippet; delete=remove the whole '
+      + 'block (no content).'
+      + '\n\nLocation: prefer "scene" (the ## heading, RECOMMENDED — stable across '
+      + 'edits) over "blockId" (ids change on every edit). For paragraph indices '
+      + 'inside a scene, count from novel_list_scenes / novel_read_chapter.'
+      + '\n\nPatch gotchas (the #1 source of stuck loops):'
+      + '\n• match MUST be a single-line snippet from inside ONE paragraph '
+      + '(newlines or blank lines are rejected — str_replace only matches inside a '
+      + 'block; cross-paragraph matches will never hit even if they look like they '
+      + 'do in a markdown preview).'
+      + '\n• match MUST be VERBATIM from novel_read_chapter output — do NOT '
+      + 'reconstruct it from memory, recalled paragraph order/wording are frequently '
+      + 'wrong.'
+      + '\n• If patch fails once: STOP patching that text, switch to action="replace" '
+      + '+ scene + paragraph (structural location, no match needed).'
+      + '\n\nEvery revision is versioned in Feishu and can be reviewed or rolled '
+      + 'back via novel_get_chapter_history.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
@@ -252,6 +278,93 @@ function registerHistory(ctx: Context): void {
         exec.signal,
       )
       return { ...r, total: r.entries.length }
+    },
+  }))
+}
+
+/**
+ * novel_restore_chapter —— 回滚章节正文到任一历史版本。
+ *
+ * 这是改稿的安全网：revise_chapter / write_chapter 改坏了不用慌，先
+ * novel_get_chapter_history 看一眼，选个 revisionId 一键回滚。注意
+ * 该工具是**写操作**，会撤销 revert 目标之后的所有编辑。
+ */
+function registerRestoreChapter(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'novel_restore_chapter',
+    description: 'Roll a chapter\'s body back to any historical version (the SAFETY NET for revision). '
+      + '\n\nTHIS IS A WRITE — it discards every edit after the target version. The chapter doc '
+      + 'is rewritten to the chosen revision\'s content. Use it when:'
+      + '\n• a multi-step revise_chapter session made things worse and you want to undo all of it'
+      + '\n• the agent and the user disagree on the direction and want to revisit a prior cut'
+      + '\n• the chapter grew too long and you want to step back to a more concise version'
+      + '\n\nWORKFLOW:'
+      + '\n1. Call novel_get_chapter_history first to see versions and their revisionIds / editTimes.'
+      + '\n2. Pick a target version. Prefer the most recent "good" one. Note: a single revisionId '
+      + 'may map to multiple historyVersionIds (one edit can produce several history rows) — '
+      + 'in that case the tool returns the candidate list and asks you to retry with '
+      + 'historyVersionId instead.'
+      + '\n3. Call novel_restore_chapter with that revisionId (or historyVersionId).'
+      + '\n\nOUTPUT:'
+      + '\n• status="done" → revert succeeded; chapter doc body is now the chosen version.'
+      + '\n• status="partial_failed" → revert succeeded for most blocks but a few failed (see '
+      + 'failedBlockTokens); verify with novel_read_chapter and patch as needed.'
+      + '\n• status="failed" → revert task itself failed (rare; usually permission).'
+      + '\n• status="running" → you passed waitTimeoutMs=0 to opt out of waiting; use the '
+      + 'returned taskId with docs +history-revert-status (or just call again).'
+      + '\n\nBy default also refreshes the chapter record\'s WORDS and sets STATUS=REVISING '
+      + '(matches revise_chapter).',
+    parameters: {
+      workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
+      chapterNo: { type: 'number', required: true, description: 'Chapter number to restore.' },
+      revisionId: { type: 'number', description: 'Target revision id from novel_get_chapter_history. Mutually exclusive with historyVersionId.' },
+      historyVersionId: { type: 'string', description: 'Target history_version_id directly (skips the chapterHistory lookup). Use this when revisionId is ambiguous.' },
+      waitTimeoutMs: { type: 'number', description: 'How long to wait for the revert task (0~60000ms). Default 30000. Pass 0 for fire-and-forget (returns status="running" + taskId).' },
+      updateWordCount: { type: 'boolean', description: 'Whether to refresh chapter.WORDS and set STATUS=REVISING. Default true.' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          documentId: { type: 'string', required: true },
+          revertedTo: {
+            type: 'object', required: true, additionalProperties: false,
+            properties: {
+              revisionId: { type: 'number', required: true },
+              historyVersionId: { type: 'string', required: true },
+              editTime: { type: 'string', required: true },
+            },
+          },
+          newRevisionId: { type: 'number' },
+          newHistoryVersionId: { type: 'string' },
+          status: { type: 'string', required: true },
+          taskId: { type: 'string' },
+          failedBlockTokens: { type: 'array', items: { type: 'string' } },
+          newWords: { type: 'number' },
+          warnings: { type: 'array', required: true, items: { type: 'string' } },
+        },
+      },
+      render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
+    },
+    async execute(args, exec) {
+      if (args.revisionId === undefined && args.historyVersionId === undefined) {
+        throw new Error('必须提供 revisionId 或 historyVersionId 之一。可先调 novel_get_chapter_history 拿到 revisionId 列表。')
+      }
+      if (args.revisionId !== undefined && args.historyVersionId !== undefined) {
+        throw new Error('revisionId 与 historyVersionId 互斥，只能传一个。')
+      }
+      const r = await restoreChapterVersion(
+        resolveWorkToken(args),
+        args.chapterNo,
+        {
+          revisionId: args.revisionId,
+          historyVersionId: args.historyVersionId,
+          waitTimeoutMs: args.waitTimeoutMs,
+          updateWordCount: args.updateWordCount,
+        },
+        exec.signal,
+      )
+      return r
     },
   }))
 }

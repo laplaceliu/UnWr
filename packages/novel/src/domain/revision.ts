@@ -20,7 +20,8 @@
  * @module @unwr/novel/domain/revision
  */
 
-import { docs, type BlockTarget } from '@unwr/feishu'
+import { base, docs, type BlockTarget } from '@unwr/feishu'
+import { CHAPTER_F, CHAPTER_STATUS, TABLE } from '@unwr/schema'
 import { findChapterRecord } from './chapter.ts'
 import { extractDocToken } from '../context/builder.ts'
 import { countWords } from './chapter.ts'
@@ -653,4 +654,226 @@ export async function chapterHistory(
       historyVersionId: e.history_version_id,
     })),
   }
+}
+
+/** 翻页查找指定 revisionId 命中所有 historyVersionId（用于多匹配冲突报告）。 */
+async function findHistoryVersionsForRevision(
+  docToken: string,
+  revisionId: number,
+  signal?: AbortSignal,
+): Promise<{ revisionId: number; historyVersionId: string; editTime: string }[]> {
+  const out: { revisionId: number; historyVersionId: string; editTime: string }[] = []
+  const pageSize = 20  // 飞书 docs +history-list page_size 上限
+  let guard = 50  // 防止无限翻页（实测单 chapter 很少超过 10）
+  while (guard-- > 0) {
+    const res = await docs.listDocHistory(docToken, pageSize, signal)
+    const entries = (res.entries ?? [])
+    for (const e of entries) {
+      if (e.revision_id === revisionId) {
+        out.push({
+          revisionId: e.revision_id,
+          editTime: e.edit_time,
+          historyVersionId: e.history_version_id,
+        })
+      }
+    }
+    // 注意：lark-cli docs +history-list 没有 hasMore 字段（实测返回字段集固定），
+    // 用 entries.length < pageSize 作为穷尽信号。guard 兜底防异常。
+    if (entries.length < pageSize) break
+  }
+  return out
+}
+
+/** restoreChapterVersion 入参。 */
+export interface RestoreParams {
+  /** 必填，二选一：从 chapterHistory 拿到的 revisionId（人类可读，递增）。 */
+  revisionId?: number
+  /** 必填，二选一：直接传 history_version_id（跳过 chapterHistory 翻页）。 */
+  historyVersionId?: string
+  /** 透传给 lark-cli 的 docs +history-revert --wait-timeout-ms。
+   * 默认 30000ms；想异步化处理可传 0（返回 status='running' + taskId）。 */
+  waitTimeoutMs?: number
+  /** 跳过章节表的 WORDS/STATUS 回写（默认 true）。 */
+  updateWordCount?: boolean
+}
+
+/** restoreChapterVersion 出参。 */
+export interface RestoreResult {
+  documentId: string
+  /** 实际被恢复到的版本（如果传的是 revisionId，editTime 也一起带回来）。 */
+  revertedTo: {
+    revisionId: number
+    historyVersionId: string
+    editTime: string
+  }
+  /** revert 后飞书生成的新条目（通常 = revertedTo.revisionId + 1）。取不到时为 undefined。 */
+  newRevisionId?: number
+  newHistoryVersionId?: string
+  /** revert 任务最终状态。 */
+  status: 'done' | 'partial_failed' | 'failed' | 'running'
+  /** 任务 ID（status='running' 或用户显式传 waitTimeoutMs=0 时返回）。 */
+  taskId?: string
+  /** 部分恢复失败的块 ID（status='partial_failed' 时）。 */
+  failedBlockTokens?: string[]
+  /** 当前字数（默认 updateWordCount=true 时 fetch 一次算出来）。 */
+  newWords?: number
+  warnings: string[]
+}
+
+/**
+ * 把章节恢复到指定历史版本（飞书 docs +history-revert 的领域封装）。
+ *
+ * 关键设计：
+ *  - 接受 revisionId（来自 novel_get_chapter_history，模型友好）或
+ *    historyVersionId（直接传 history_version_id，跳过翻页，省 1 次 CLI 往返）。
+ *  - 同一 revisionId 在飞书可能命中多条（同一编辑生成的多条历史），多匹配时
+ *    不擅自挑一条，返回 'ambiguous' 错误让调用方显式传 historyVersionId。
+ *  - revert 任务完成后再 listDocHistory 一次取顶部新条目，给模型一个稳定的
+ *    「下一步 revisionId」（revert 后飞书总生成新条目，但可能延迟 1~3s）。
+ *  - 默认回写章节表的 WORDS + STATUS='REVISING'（与 reviseChapter 同步）。
+ *
+ * 用法：作为 Tier 5 安全网配套 novel_revise_chapter：改坏了 → getChapterHistory →
+ *        restoreChapterVersion，agent 敢放心试多步编辑。
+ */
+export async function restoreChapterVersion(
+  baseToken: string,
+  chapterNo: number,
+  params: RestoreParams,
+  signal?: AbortSignal,
+): Promise<RestoreResult> {
+  const warnings: string[] = []
+  if (params.revisionId === undefined && params.historyVersionId === undefined) {
+    throw new Error('restoreChapterVersion: 必须提供 revisionId 或 historyVersionId 之一')
+  }
+
+  const { docToken } = await resolveChapterDoc(baseToken, chapterNo, signal)
+
+  let historyVersionId: string
+  let revisionId: number
+  let editTime: string
+  if (params.historyVersionId !== undefined) {
+    // 用户直接传 history_version_id：跳过翻页，但 revisionId/editTime 拿不到（返回 undefined）
+    historyVersionId = params.historyVersionId
+    revisionId = NaN
+    editTime = ''
+  } else {
+    const matches = await findHistoryVersionsForRevision(
+      docToken, params.revisionId as number, signal,
+    )
+    if (matches.length === 0) {
+      throw new Error(
+        `restoreChapterVersion: 在文档历史中找不到 revisionId=${params.revisionId}`
+        + '。可能该版本已被清理或 doc 被重建。'
+        + '可改传 historyVersionId（来自 +history-list 原始条目）重试。',
+      )
+    }
+    if (matches.length > 1) {
+      const candidates = matches.map((m) => `  • ${m.historyVersionId} (${m.editTime})`)
+        .join('\n')
+      throw new Error(
+        `restoreChapterVersion: revisionId=${params.revisionId} 命中 ${matches.length} 条历史，`
+        + '请改传 historyVersionId 明确指定其中一条：\n' + candidates,
+      )
+    }
+    historyVersionId = matches[0]!.historyVersionId
+    revisionId = matches[0]!.revisionId
+    editTime = matches[0]!.editTime
+  }
+
+  // 真正恢复（默认 30000ms；用户传 0 表示 fire-and-forget）
+  const revertRes = await docs.revertDocToVersion(
+    docToken, historyVersionId, params.waitTimeoutMs ?? 30000, signal,
+  )
+
+  const result: RestoreResult = {
+    documentId: docToken,
+    revertedTo: { revisionId, historyVersionId, editTime },
+    status: revertRes.status,
+    warnings,
+  }
+  if (revertRes.taskId !== undefined) result.taskId = revertRes.taskId
+  if (revertRes.failedBlockTokens !== undefined) {
+    result.failedBlockTokens = revertRes.failedBlockTokens
+  }
+
+  if (revertRes.status === 'failed') {
+    throw new Error(
+      `restoreChapterVersion: docs +history-revert 任务失败（historyVersionId=${historyVersionId}）。`
+      + '可能原因：权限不足 / 文档已被删除 / historyVersionId 无效。',
+    )
+  }
+  if (revertRes.status === 'running') {
+    // 用户显式传 waitTimeoutMs=0（异步化），只回填能填的，剩下留作下一步查
+    warnings.push('revert 任务未等待完成（status=running）。'
+      + '下一步可用 task_id + docs +history-revert-status 续查，'
+      + '或在 30s 内重试 restoreChapterVersion。')
+    return result
+  }
+
+  // done / partial_failed：fetch 新内容拿字数与新 historyVersionId
+  if (params.updateWordCount !== false) {
+    try {
+      result.newWords = await currentWords(docToken, signal)
+    } catch (e) {
+      warnings.push(`字数刷新失败（${(e as Error).message}），可手动 novel_list_scenes 后重试。`)
+    }
+    try {
+      const newDocRecordId = await findChapterRecord(baseToken, chapterNo, signal)
+      if (newDocRecordId !== undefined) {
+        await base.updateRecords(
+          baseToken,
+          TABLE.CHAPTER,
+          {
+            [newDocRecordId]: {
+              [CHAPTER_F.WORDS]: result.newWords ?? 0,
+              [CHAPTER_F.STATUS]: [CHAPTER_STATUS.REVISING],
+            },
+          },
+          signal,
+        )
+      } else {
+        warnings.push('未找到章节记录，字数与状态未回写。')
+      }
+    } catch (e) {
+      warnings.push(`章节表 WORDS/STATUS 回写失败（${(e as Error).message}）。`)
+    }
+  }
+
+  // 拿 revert 后飞书新生成的历史条目顶部（仅当 revisionId 是已知数字才比较）
+  // 飞书索引可能有秒级延迟，最多退避 3s 一次。
+  // historyVersionId 直传路径（revisionId=NaN）跳过这一步——拿不到「上一个」做参照。
+  if (Number.isFinite(revisionId)) {
+    for (const delayMs of [0, 3000]) {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+      try {
+        const newHistory = await docs.listDocHistory(docToken, 1, signal)
+        const top = newHistory.entries?.[0]
+        if (top && top.revision_id > revisionId) {
+          result.newRevisionId = top.revision_id
+          result.newHistoryVersionId = top.history_version_id
+          break
+        }
+        if (top && top.revision_id === revisionId) {
+          // 异常：revert 没新增条目（理论不可能）
+          warnings.push('revert 后历史顶部 revisionId 与目标一致，飞书未生成新条目（异常）。')
+          break
+        }
+      } catch (e) {
+        warnings.push(`新 historyVersionId 拉取失败（${(e as Error).message}）。`)
+        break
+      }
+    }
+    if (result.newRevisionId === undefined && revertRes.status === 'done') {
+      warnings.push('未能取到 revert 后新生成的 revisionId；下次 chapterHistory 时将自动同步。')
+    }
+  }
+
+  if (revertRes.status === 'partial_failed') {
+    warnings.push(
+      `revert 部分块失败（${revertRes.failedBlockTokens?.length ?? 0} 个）。`
+      + '建议 novel_read_chapter 复核内容，必要时再用 revise_chapter 微调。',
+    )
+  }
+
+  return result
 }

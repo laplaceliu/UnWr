@@ -129,11 +129,20 @@ export const WRITING_CONVENTIONS = `
    已占用且有正文文档才拒绝（那时改用 append/revise）。
    因此 append/revise/read 报「没有正文文档」时，正确动作是**回头用
    novel_write_chapter 写**，不是反复试 append，更不是判定为死锁去问用户。
-9. **改稿纪律**：revise 的 patch/replace 失败时，不要反复用猜的 match 重试，
-   也**绝不用占位文本（如 X）试探写工具**——会真实写入。先用
-   novel_list_scenes 取场景/块结构化定位，再按块 ID 精确修改。
-   同理**不要用 bash/echo 做笔记或"探一下工具"**：它既写不进飞书，
-   也拿不到任何状态，纯属白烧一轮。要状态就用 novel_manage_* 的 query。
+9. **改稿纪律**（这是最常见的卡死循环源头——务必先读完再动手）：
+   - **同一场戏准备做 ≥3 处编辑就停下来**：先用 action="replace" +
+     scene + startParagraph/endParagraph 一次性重写整段（一次 CLI 往返即可完成
+     多段合一），远比逐段 patch+delete+replace 稳。逐段改的代价是 blockId
+     反复失效、心智开销指数增长——agent 自己撞到时往往会写"意识到这种
+     逐块删除的过程会非常漫长且脆弱"。这条逃生通道正是为此存在。
+   - revise 的 patch/replace 失败时，不要反复用猜的 match 重试，也**绝不用
+     占位文本（如 X）试探写工具**——会真实写入。先用 novel_list_scenes 取
+     场景/块结构化定位，再按块 ID 精确修改；或直接换到上条的多段合一方案。
+   - 同理**不要用 bash/echo 做笔记或"探一下工具"**：它既写不进飞书，
+     也拿不到任何状态，纯属白烧一轮。要状态就用 novel_manage_* 的 query。
+   - 改坏了不要慌：每次改稿在飞书都留了版本，可用 novel_get_chapter_history
+     查历史，再用 novel_restore_chapter 回滚到任一历史版本（这是安全网，
+     让你敢放心试；多步 patch 越改越差时就停下回滚，不要继续试）。
 10. **写作模式**：多步写作任务开始前，先用 novel_manage_work(action=get_config)
    确认当前写作模式（config.mode），并按模式调整编排：
    - 协作助手：逐章/逐段推进，每次生成后停下等用户反馈再继续。

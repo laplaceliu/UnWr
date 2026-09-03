@@ -328,6 +328,62 @@ export function listDocHistory(
   )
 }
 
+/** docs +history-revert 的返回结果。 */
+export interface DocRevertResult {
+  /** 任务状态。done=完全成功；partial_failed=部分块失败；failed=整体失败；
+   *  running=异步任务未完成（waitTimeoutMs=0 时返回）。 */
+  status: 'done' | 'partial_failed' | 'failed' | 'running'
+  /** 飞书返回的新版本 historyVersionId（与传入的不同，revert 后会生成新条目）。 */
+  historyVersionId?: string
+  /** 部分失败的块 ID（status='partial_failed' 时存在）。 */
+  failedBlockTokens?: string[]
+  /** 异步任务的 task_id（status='running' 或 waitTimeoutMs=0 时存在）。 */
+  taskId?: string
+}
+
+/**
+ * 把文档恢复到指定历史版本（飞书 docs +history-revert）。
+ *
+ * 该调用是异步任务，飞书默认 wait 30s 后返回 status：
+ *  - 'done' 完全成功
+ *  - 'partial_failed' 部分块失败（failedBlockTokens 列出失败的块）
+ *  - 'failed' 整体失败（极少见，多为权限或 doc 不存在）
+ *  - 'running' waitTimeoutMs=0 时立即返回，需用 +history-revert-status 续查
+ *
+ * revert 后会生成新的 historyVersionId（与传入的不同），旧版本仍可访问。
+ */
+export async function revertDocToVersion(
+  doc: string,
+  historyVersionId: string,
+  waitTimeoutMs = 30000,
+  signal?: AbortSignal,
+): Promise<DocRevertResult> {
+  const timeout = Math.min(Math.max(0, Math.trunc(waitTimeoutMs)), 60000)
+  const res = await runCli<Record<string, unknown>>(
+    ['docs', '+history-revert',
+      '--doc', doc,
+      '--history-version-id', historyVersionId,
+      '--wait-timeout-ms', String(timeout)],
+    { signal },
+  )
+  const data = (res && typeof res === 'object' ? res : {}) as Record<string, unknown>
+  const rawStatus = data.status
+  const status: DocRevertResult['status'] =
+    rawStatus === 'done' || rawStatus === 'partial_failed'
+    || rawStatus === 'failed' || rawStatus === 'running'
+      ? rawStatus
+      : 'failed'
+  return {
+    status,
+    historyVersionId: typeof data.history_version_id === 'string'
+      ? data.history_version_id : undefined,
+    failedBlockTokens: Array.isArray(data.failed_block_tokens)
+      ? (data.failed_block_tokens.filter((x): x is string => typeof x === 'string'))
+      : undefined,
+    taskId: typeof data.task_id === 'string' ? data.task_id : undefined,
+  }
+}
+
 /**
  * 检索文档中的关键词，返回命中块。
  * 支撑一致性检查时的原文回溯（分层记忆 L4）。

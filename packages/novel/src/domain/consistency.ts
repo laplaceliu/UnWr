@@ -147,6 +147,18 @@ export async function runRuleChecks(
   const recordIdToChapterNo = new Map(
     chapters.filter((c) => c.recordId !== '').map((c) => [c.recordId, c.no]),
   )
+  /**
+   * F1：人物 link 同理要映射回名字，否则 issue.title 永远是 `[object Object]`。
+   * 来源 characterRows 的 __recordId + 名字/别名；别名优先回退到名字。
+   */
+  const recordIdToName = new Map<string, string>()
+  for (const r of characterRows) {
+    const id = str(r['__recordId'])
+    if (id === '') continue
+    const name = str(r[CHARACTER_F.NAME])
+    const alias = str(r[CHARACTER_F.ALIAS])
+    recordIdToName.set(id, alias !== '' ? alias : name !== '' ? name : id)
+  }
 
   // 当前进度：未指定时取最大章节号
   const currentNo = input.currentChapterNo
@@ -155,7 +167,7 @@ export async function runRuleChecks(
   issues.push(...checkForeshadows(
     foreshadowRows, chapterNoToTitle, recordIdToChapterNo, currentNo, tolerance,
   ))
-  issues.push(...checkPresence(stateRows, chapterNoToTitle, recordIdToChapterNo))
+  issues.push(...checkPresence(stateRows, chapterNoToTitle, recordIdToChapterNo, recordIdToName))
 
   if (input.checkTimeline === true) {
     issues.push(...checkTimeline(eventRows, chapterNoToTitle, recordIdToChapterNo))
@@ -232,11 +244,17 @@ export function checkForeshadows(
  *
  * 这是**启发式**检查：位置变化很可能有正当理由（剧情中移动了），
  * 因此 confidence 设为 0.6，提示"值得看看"而非"一定是错"。
+ *
+ * **同章多快照**约定：同章内多次沉淀时取最后一次作为该章代表快照
+ * （同章内的位移/恢复是叙事单元内的正常过程，不算矛盾）。
+ * 工具 description 已要求 agent 沉淀时同章只写一条；若仍出现多条，
+ * 这里去重兜底，避免「同章内位移」误报。
  */
 export function checkPresence(
   rows: Record<string, unknown>[],
   chapterNoToTitle: ReadonlyMap<number, string>,
   recordIdToChapterNo: ReadonlyMap<string, number> = new Map(),
+  recordIdToName: ReadonlyMap<string, string> = new Map(),
 ): Issue[] {
   const issues: Issue[] = []
 
@@ -246,7 +264,10 @@ export function checkPresence(
   }[]>()
 
   for (const r of rows) {
-    const name = str(r['人物']) || '(未关联人物)'
+    // F1：人物字段是 link，存的是 [{id:'recXX'}]，直接 String() 会得到 '[object Object]'
+    // 走 linkFirstName 解析：record id → 名字；查不到时退回原 str()（保留旧行为，便于排错）
+    const resolvedName = linkFirstName(r['人物'], recordIdToName)
+    const name = resolvedName ?? str(r['人物']) ?? '(未关联人物)'
     const chapterNo = linkFirstNo(r['章节'], chapterNoToTitle, recordIdToChapterNo)
     if (chapterNo === undefined) continue
     const list = byCharacter.get(name) ?? []
@@ -262,9 +283,22 @@ export function checkPresence(
   for (const [name, snapshots] of byCharacter) {
     snapshots.sort((a, b) => a.chapterNo - b.chapterNo)
 
-    for (let i = 1; i < snapshots.length; i++) {
-      const prev = snapshots[i - 1]
-      const cur = snapshots[i]
+    // F2：同章多快照去重 —— 每 (人物, 章) 只保留最后一条作为该章代表快照
+    // 注意：stateRows 是 listAllRecords 的原始顺序，sort 稳定保留相对顺序
+    // （V8 sort 2019+ 保证稳定性）。同章多条时，最后一条 = 沉淀最末一次 = 章末状态。
+    const deduped: typeof snapshots = []
+    for (const s of snapshots) {
+      const last = deduped[deduped.length - 1]
+      if (last !== undefined && last.chapterNo === s.chapterNo) {
+        deduped[deduped.length - 1] = s
+      } else {
+        deduped.push(s)
+      }
+    }
+
+    for (let i = 1; i < deduped.length; i++) {
+      const prev = deduped[i - 1]
+      const cur = deduped[i]
       if (prev === undefined || cur === undefined) continue
 
       // H5-a：相邻两章位置不同 —— 可能是正常移动，仅提示
@@ -283,27 +317,87 @@ export function checkPresence(
         })
       }
 
-      // H5-b：伤势消失无交代 —— 从"受伤"变"无恙"值得注意
-      if (
-        prev.physical !== '' && cur.physical !== ''
-        && /伤|痛|虚弱|中毒|昏迷/.test(prev.physical)
-        && !/伤|痛|虚弱|中毒|昏迷/.test(cur.physical)
-        && cur.chapterNo - prev.chapterNo <= 3
-      ) {
+      // H5-b：伤势消失无交代 —— 三级词典 + 否定剥离（见 classifyInjuryLevel）
+      const prevLevel = classifyInjuryLevel(prev.physical)
+      const curLevel = classifyInjuryLevel(cur.physical)
+      // 仅"重伤→非重伤"或"重伤→空白"算矛盾（severity=3 阻断）。
+      // 轻伤消失是网文常态（"血丝眼过章即消"），仅作 severity=2 提示；
+      // 不适/正常语不参与检测。
+      // 窗口放宽到 ≤5 章：原 3 章过窄，"骨折→行动如常"在 4-5 章内同样可疑。
+      if (prevLevel === 'severe' && curLevel !== 'severe' && cur.chapterNo - prev.chapterNo <= 5) {
         issues.push({
           type: ISSUE_TYPE.PRESENCE,
           severity: 3,
-          title: `${name} 的伤势在第 ${prev.chapterNo}→${cur.chapterNo} 章之间消失`,
+          title: `${name} 的重伤在第 ${prev.chapterNo}→${cur.chapterNo} 章之间消失`,
           location: `「${prev.physical}」→「${cur.physical}」，短时间内恢复是否缺交代`,
           chapterNo: cur.chapterNo,
           character: name === '(未关联人物)' ? undefined : name,
           confidence: 0.6,
+        })
+      } else if (prevLevel === 'minor' && curLevel === 'none' && cur.chapterNo - prev.chapterNo <= 3) {
+        issues.push({
+          type: ISSUE_TYPE.PRESENCE,
+          severity: 2,
+          title: `${name} 的轻伤在第 ${prev.chapterNo}→${cur.chapterNo} 章之间消失`,
+          location: `「${prev.physical}」→「${cur.physical}」，网文中较常见，仅提示`,
+          chapterNo: cur.chapterNo,
+          character: name === '(未关联人物)' ? undefined : name,
+          confidence: 0.5,
         })
       }
     }
   }
 
   return issues
+}
+
+/**
+ * 伤势分级（用于 H5-b 状态跳变检查）。
+ *
+ * 三级：
+ *   - 'severe'  重伤：阻断级消失报警。`重伤|骨折|断筋|中毒|昏迷|濒死|致命|昏厥`
+ *   - 'minor'   轻伤：仅提示级。`伤|痛|出血|淤青|崴|扭|刺|咬|擦`
+ *   - 'none'    无/不适：不参与检测。空白、或仅含 `疲劳|累|困|乏力|不适|酸|硌|血丝|晕` 等微症
+ *
+ * **否定剥离**（F3.5）：朴素正则会把「无伤」「不痛」「已愈」「伤已消」判为有伤，
+ * 但这些语义上是"没有伤势"。先剥否定再匹配关键词。
+ *   - `(无|未|没有|不|已愈|已消|不再)(伤|痛|虚|中|昏)` → 该次匹配不算
+ *   - 「伤势未愈」「尚未痊愈」也属于"伤仍存在"，**不**剥离（否定词修饰的是"愈"不是"伤"）
+ *
+ * 限制：纯正则只能覆盖典型边界，复杂句式（"看似无伤实则…"）无能为力。
+ * 这是 H5-b 工具检测的本质局限，由 confidence 体现（重伤 0.6 / 轻伤 0.5）。
+ */
+export type InjuryLevel = 'severe' | 'minor' | 'none'
+
+const SEVERE_PATTERNS = ['重伤', '骨折', '断筋', '中毒', '昏迷', '濒死', '致命', '昏厥']
+const MINOR_PATTERNS = ['伤', '痛', '出血', '淤青', '崴', '扭', '刺伤', '咬伤', '擦伤']
+// 「不适/疲劳」等是身体状态，但**不是伤势**，参与存在但不参与消失报警
+const DISCOMFORT_ONLY_PATTERNS = ['疲劳', '累', '困', '乏力', '不适', '酸', '硌', '血丝', '晕眩', '头晕']
+// 否定前缀：紧跟伤/痛关键词时，整次否定算"无伤"（无伤、不痛、已愈、已消）
+const NEGATION_BEFORE_INJURY = /(无|未|没有|不|已愈|已消|已痊|不再)(?:之)?(伤|痛|虚|中|昏)/
+// 否定后缀：伤/痛关键词之后跟"已消/已愈"也算（伤已消、痛已愈）
+// 「不再有伤」「伤不再」由 NEGATION_BEFORE_INJURY 覆盖；此处专门处理"伤X已消"
+const NEGATION_AFTER_INJURY = /(伤|痛|虚|中|昏).{0,3}(?:已消|已愈|已痊|全消|全愈)/
+// 「伤未愈」「尚未痊愈」「伤仍存」= 伤仍存在，**不**剥
+const STILL_HURT = /(伤|痛|虚|中|昏)(?:仍|尚|依|未愈|未痊|未消|还在)/
+
+export function classifyInjuryLevel(text: string): InjuryLevel {
+  if (text === '') return 'none'
+  // 先剥否定：检测到"无伤""不痛""已愈""伤已消"等完整否定结构 → 视同无伤
+  const isNegated =
+    NEGATION_BEFORE_INJURY.test(text) || NEGATION_AFTER_INJURY.test(text)
+  if (isNegated && !STILL_HURT.test(text)) {
+    return 'none'
+  }
+  // 重伤优先
+  for (const p of SEVERE_PATTERNS) {
+    if (text.includes(p)) return 'severe'
+  }
+  // 轻伤（不含不适/疲劳等微症）
+  for (const p of MINOR_PATTERNS) {
+    if (text.includes(p)) return 'minor'
+  }
+  return 'none'
 }
 
 /* ------------------------------------------------------------------ */
@@ -508,6 +602,35 @@ async function safeList(
     skipped?.push(tableName)
     return []
   }
+}
+
+/**
+ * 从 link 字段解析出关联人物名。
+ *
+ * 与 linkFirstNo 同形态（飞书 link 字段读回是 `[{id: 'recXX'}]` 或展开后的文本）。
+ * 这里只对 record id 形态做映射：record id → 人物名；文本形态无法可靠回退
+ * （同名异人/别名/笔名），查到返回 undefined，由调用方走 str() 兜底。
+ *
+ * 查不到时返回 undefined —— 不抛错，调用方决定兜底文案。
+ */
+function linkFirstName(
+  value: unknown,
+  recordIdToName: ReadonlyMap<string, string> = new Map(),
+): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (raw === undefined || raw === null) return undefined
+
+  // 形态 1：{ id: 'recXXXX' } —— 走映射
+  if (typeof raw === 'object' && raw !== null && 'id' in raw) {
+    const id = String((raw as { id: unknown }).id)
+    const name = recordIdToName.get(id)
+    return name !== undefined ? name : undefined
+  }
+
+  // 形态 2：字符串 —— 视为已是名字直接返回（飞书偶有展开形态）
+  if (typeof raw === 'string' && raw !== '') return raw
+
+  return undefined
 }
 
 /**
