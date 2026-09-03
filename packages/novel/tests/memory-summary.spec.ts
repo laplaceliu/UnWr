@@ -73,6 +73,9 @@ describe('novel_update_summary 参数形态', () => {
     // 能进 execute 触发自纠正报错的关键。若误删 object 分支会复发原故障。
     expect(newInfo?.oneOf).toBeDefined()
     const branches = newInfo?.oneOf as Array<{ type?: string | string[]; items?: { type?: string } }>
+    // 实际：2 branches（legal string[] + object catch-all）
+    //   - legal: type=array, items:type=string — 真实数据形态
+    //   - object: 让对象能进 execute，由 validateShape 在执行入口抛自纠正错误
     expect(branches.length).toBe(2)
     expect(branches.some((b) => b.type === 'array' && b.items?.type === 'string')).toBe(true)
     expect(branches.some((b) => b.type === 'object' || (Array.isArray(b.type) && b.type.includes('object')))).toBe(true)
@@ -305,5 +308,116 @@ describe('novel_update_summary 参数形态', () => {
     expect(Array.isArray(p.characterChanges)).toBe(true)
     expect(Array.isArray(p.events)).toBe(true)
     expect(Array.isArray(p.newForeshadows)).toBe(true)
+  })
+
+  // ===== scene / endState / freeform 实机 2026-09-03 第 16 章（string 字段被
+  // 当作 string-array 字段包装） =====
+  // 用户场景完整 payload：
+  //   events: [[[[[ "..." ]]]]]  ← 5 层嵌套（多加的）
+  //   characterChanges: [["..."]] ← 双层嵌套（多加的）
+  //   newForeshadows: [[["..."]]]
+  //   scene: ["..."]              ← string 字段误包装进数组
+  //   endState: { freeform: "..." } ← string 字段误包装进对象
+
+  it('scene 误传字符串数组 → validateShape 拒并提醒「scene 是字符串，不是数组」', async () => {
+    const tool = collectTools().get(TOOL)!
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 16,
+          scene: ['阿史那莺带裴三错去长安城北胡商义地——碑挤着碑、坟挤着坟。'] as unknown as string,
+          events: ['裴三错看碑'],
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) { caught = e as Error }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/scene/)
+    expect(caught!.message).toMatch(/必须是字符串/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('endState 误传对象 { freeform: "..." } → validateShape 拒并指 endState', async () => {
+    const tool = collectTools().get(TOOL)!
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 16,
+          scene: '开元四十一年 三月十五 晨,长安城北胡商义地。',
+          events: ['裴三错看碑'],
+          endState: { freeform: '本章把稽戛方之死的物理证据抬到裴三错面前:' } as unknown as string,
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) { caught = e as Error }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/endState/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('newForeshadows 多重嵌套 `[[["..."]]]` → 不静默（schema 或 validateShape 拒）', async () => {
+    const tool = collectTools().get(TOOL)!
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 16,
+          scene: '开元四十一年 三月十五 晨,长安城北胡商义地。',
+          events: ['e'],
+          newForeshadows: [[['三月初九这一夜:圆觉长老「坐化」']]] as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) { caught = e as Error }
+    expect(caught).not.toBeNull()
+    // DSH schema 顶层会拒（array(string) 不匹配 [[["..."]]]）→ 报 invalid arguments 字段名
+    // 或我们的 validateShape 抓 → 报"嵌套"/"顶层扁平"。
+    // 两者之一都可——关键是**不让数据落库**。
+    expect(caught!.message).toMatch(/newForeshadows|顶层扁平|嵌套|invalid arguments|oneOf/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('events 多重嵌套 `[[[[["..."]]]]]`（用户 payload）→ DSH schema 直接拒（顶层拒）', async () => {
+    const tool = collectTools().get(TOOL)!
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 16,
+          scene: '开元四十一年 三月十五 晨,长安城北胡商义地。',
+          events: [[[[['章末钩子:小坑边留了一截炭屑']]]]] as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) { caught = e as Error }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/events/)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('characterChanges 多重嵌套 `[["..."]]`（用户 payload）→ DSH schema 拒（顶层拒）', async () => {
+    const tool = collectTools().get(TOOL)!
+    let caught: Error | null = null
+    try {
+      await tool.execute(
+        {
+          workToken: 't',
+          chapterNo: 16,
+          scene: '开元四十一年 三月十五 晨,长安城北胡商义地。',
+          events: ['e'],
+          characterChanges: [['阿史那莺:在坟前蹲得稳']] as unknown as string[],
+        },
+        { signal: new AbortController().signal },
+      )
+    } catch (e) { caught = e as Error }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/characterChanges/)
+    expect(updateCalls).toHaveLength(0)
   })
 })

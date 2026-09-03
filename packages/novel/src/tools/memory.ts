@@ -84,12 +84,97 @@ freeform）都是顶层扁平，不要嵌套——尤其不要把同名字段再
 与 packages/novel/src/domain/memory.ts 的 chapterSummaryRecord 形状。`
 
 /**
- * 校验 string-array 字段实际形态。命中已知错形态键 → 抛含 SHAPE_HINT_BODY
- * 的自纠正错误，把"字段名"放前面让模型精确定位错的字段。
+ * 校验字段形态——`kind` 表示字段期望的形态：
+ *   - 'string-array': 必须是顶层扁平字符串数组；命中对象（尤其嵌套同名字段）/嵌套数组则抛错
+ *   - 'string-scalar': 必须是字符串；命中数组（哪怕是 ["一段"]）/对象则抛错
+ *
+ * 实机 2026-09-03 第 16 章两类典型错形态：
+ *   (1) `scene: ["..."]`（字符串误包装进数组）→ string-scalar 拒
+ *   (2) `events: [[[[ ["..."] ]]]]`（数组多重嵌套）→ string-array 拒（不进 array 路径，
+ *       内容却不是合法 string[]）。
+ *
+ * 抛出错误含 SHAPE_HINT_BODY 自纠正示例，模型下一轮能照抄。
+ */
+type FieldKind = 'string-array' | 'string-scalar'
+
+const FIELD_KINDS = new Map<string, FieldKind>([
+  ['scene', 'string-scalar'],
+  ['endState', 'string-scalar'],
+  ['freeform', 'string-scalar'],
+  ['events', 'string-array'],
+  ['characterChanges', 'string-array'],
+  ['newInfo', 'string-array'],
+  ['newForeshadows', 'string-array'],
+])
+function kindFor(field: string): FieldKind {
+  const k = FIELD_KINDS.get(field)
+  if (k === undefined) return 'string-array'
+  return k
+}
+
+function throwScalarMismatch(field: string, value: unknown): never {
+  const tag = Array.isArray(value)
+    ? '字符串数组'
+    : typeof value === 'object' && value !== null
+      ? '对象'
+      : typeof value
+  if (kindFor(field) === 'string-scalar') {
+    throw new Error(
+      `字段「${field}」必须是字符串（一句），你传的是${tag}。`
+      + '\n你是不是把本章的场景包装进了数组 `field: ["..."]`？'
+      + '`scene`/`endState`/`freeform` 是**单个字符串**，与 `events`/`characterChanges`/'
+      + '`newInfo`/`newForeshadows` 这几个**数组**字段平级——不要把字符串包装成单元素数组。'
+      + '\n\n正确示例（请**逐字段**核对哪些键该在哪里、哪些是字符串、哪些是数组）：\n'
+      + SHAPE_HINT_BODY,
+    )
+  }
+  throw new Error(
+    `字段「${field}」必须是字符串数组（每条一句），你传的是${tag}。`
+    + '\n你是不是把数组多重嵌套了，如 `[[["..."]]]`？数组里每一项必须是**直接是字符串**，'
+    + '不要再用 array 包装。\n\n正确示例（请**逐字段**核对）：\n'
+    + SHAPE_HINT_BODY,
+  )
+}
+/** 探测 value 是否"内容是 string 但被错误嵌套进数组（含多层级 array）"。 */
+function isNestedStringArray(value: unknown): boolean {
+  if (!Array.isArray(value)) return false
+  // 顶层是 array 但某一项不是 string（要么对象要么又是 array）→ 嵌套了。
+  return value.some((x) => typeof x !== 'string')
+}
+
+/**
+ * 校验字段实际形态。命中已知错形态键 / 数组元素不是 string / string 字段接 array → 抛错。
+ *
+ * @param field 工具参数名（必须是 FIELD_KINDS 注册过的字段名）
+ * @param value 模型实传的值
  */
 function validateShape(field: string, value: unknown): void {
   if (value === undefined || value === null) return
-  if (Array.isArray(value)) return
+  const kind = kindFor(field)
+
+  if (kind === 'string-scalar') {
+    // string 字段：禁止 array，禁止 object。直接 string 放行；否则抛。
+    if (typeof value !== 'string') {
+      throwScalarMismatch(field, value)
+    }
+    return
+  }
+
+  // kind === 'string-array'
+  if (Array.isArray(value)) {
+    // 多层嵌套 / 对象项 → 抛错（不要静默取第一项——schema 形态误读，落库前拦下）
+    if (isNestedStringArray(value)) {
+      throw new Error(
+        `字段「${field}」必须是顶层扁平字符串数组，每一项都是直接字符串。\n`
+        + '你是不是把数组嵌套了，如 `[[["..."]]]`？'
+        + '`events`/`characterChanges`/`newInfo`/`newForeshadows` 的每一项**直接**是字符串，'
+        + '不要用 array 再包一层。\n\n正确示例：\n'
+        + SHAPE_HINT_BODY,
+      )
+    }
+    // 合法 string[]，放行
+    return
+  }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>
     const keys = Object.keys(obj)
@@ -124,7 +209,25 @@ function registerUpdateSummary(ctx: Context): void {
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       chapterNo: { type: 'number', required: true, description: 'Chapter number' },
-      scene: { type: 'string', description: 'When and where this chapter takes place.' },
+      // 同 endState/freeform：放宽为 oneOf 让错形态进 execute 触发自纠正。
+      // 实机 2026-09-03 第 16 章：模型把 scene 传成 `scene: ["..."]`（字符串误包装进数组）。
+      // 顶层 type=string 直接拒，模型看不到 self-correct 提示就盲改。
+      scene: {
+        oneOf: [
+          {
+            type: 'string',
+            description: '本章场景（一句）：景朝代 + 月日 + 时刻 + 地点',
+          },
+          {
+            type: 'array', items: { type: 'string' },
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '本章场景——一句：景朝代 + 月日 + 时刻 + 地点。**必须是字符串**，**不要**包装成数组。',
+      },
       // 同 newInfo：放宽为 oneOf 让对象能进 execute 触发自纠正。
       // 实机 2026-09-03 第 11 章：模型把全套平级字段（item/characterChanges/newInfo/newForeshadows/endState/freeform）
       // 塞进 characterChanges 对象里，DSH 顶层 array 校验直接拒。
@@ -179,7 +282,7 @@ function registerUpdateSummary(ctx: Context): void {
         oneOf: [
           {
             type: 'array', items: { type: 'string' },
-            description: '新揭示信息，每条一句的字符串数组',
+            description: '本章新揭示的信息 0-N 条，每条一行的字符串数组',
           },
           {
             type: 'object', additionalProperties: true,
@@ -189,8 +292,40 @@ function registerUpdateSummary(ctx: Context): void {
         description: '本章新揭示的信息（字符串数组，每条一句）。必须是顶层字段，不要把 newForeshadows / endState / freeform 塞进 newInfo 对象。',
       },
 
-      endState: { type: 'string', description: 'Situation and open questions at chapter end. 顶层字段，不要嵌进 newInfo。' },
-      freeform: { type: 'string', description: 'Anything else worth remembering. 顶层字段，不要嵌进 newInfo。' },
+      // 同 scene：放宽为 oneOf 让错形态（array/object）进 execute 触发自纠正。
+      endState: {
+        oneOf: [
+          {
+            type: 'string',
+            description: '章末状态（一句）：谁在哪里、悬念是什么',
+          },
+          {
+            type: 'array', items: { type: 'string' },
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '章末状态——一句：谁在哪里、悬念是什么。**字符串**，不要包装数组或对象。',
+      },
+      freeform: {
+        oneOf: [
+          {
+            type: 'string',
+            description: '其它值得记住的（无固定格式，单句或多句）',
+          },
+          {
+            type: 'array', items: { type: 'string' },
+          },
+          {
+            type: 'object', additionalProperties: true,
+            description: '【错形态专用】execute 会拒并返回正确示例',
+          },
+        ],
+        description: '其它值得记住的——字符串。**不要**包装成 `{"freeform": "..."}` 对象'
+          + '（这是实机 2026-09-03 第 16 章撞的形态）。',
+      },
     },
     output: {
       schema: {
@@ -211,6 +346,9 @@ function registerUpdateSummary(ctx: Context): void {
       validateShape('events', args.events)
       validateShape('newInfo', args.newInfo)
       validateShape('newForeshadows', args.newForeshadows)
+      validateShape('scene', args.scene)
+      validateShape('endState', args.endState)
+      validateShape('freeform', args.freeform)
       // validateShape 已 throw 拒错形态——能到这里说明这 4 个字段都是 string[] | undefined。
       // DSH 对 schema oneOf 推出的 args 类型是 wide union，与 updateChapterSummary
       // 的 ChapterSummaryInput(string[] 形态) 不直接 assignable。call-site 的单 cast
@@ -219,14 +357,17 @@ function registerUpdateSummary(ctx: Context): void {
       // assignable，用 call-site cast 而非重写 schema 类型。
       // pick 出仅 7 个章节摘要字段（filter undefined），与原本的透传行为一致。
       // DSH 对 oneOf 推出 wide union，加 `as ChapterSummaryInput` 窄化。
+      // validateShape 已 throw 拒错形态——能到这一句，schema wide union 已经收窄。
+      // 这里再用 `typeof === 'string'` 二次过滤 DSH schema 推不出却实际放行的
+      // 嵌套情形（防御性，几率为 0），让 cast 不会被错误推断拒。
       const summary: ChapterSummaryInput = {
-        ...(args.scene !== undefined ? { scene: args.scene } : {}),
-        ...(Array.isArray(args.events) ? { events: args.events } : {}),
-        ...(Array.isArray(args.characterChanges) ? { characterChanges: args.characterChanges } : {}),
-        ...(Array.isArray(args.newInfo) ? { newInfo: args.newInfo } : {}),
-        ...(Array.isArray(args.newForeshadows) ? { newForeshadows: args.newForeshadows } : {}),
-        ...(args.endState !== undefined ? { endState: args.endState } : {}),
-        ...(args.freeform !== undefined ? { freeform: args.freeform } : {}),
+        ...(typeof args.scene === 'string' ? { scene: args.scene } : {}),
+        ...(Array.isArray(args.events) ? { events: args.events as string[] } : {}),
+        ...(Array.isArray(args.characterChanges) ? { characterChanges: args.characterChanges as string[] } : {}),
+        ...(Array.isArray(args.newInfo) ? { newInfo: args.newInfo as string[] } : {}),
+        ...(Array.isArray(args.newForeshadows) ? { newForeshadows: args.newForeshadows as string[] } : {}),
+        ...(typeof args.endState === 'string' ? { endState: args.endState } : {}),
+        ...(typeof args.freeform === 'string' ? { freeform: args.freeform } : {}),
       }
       const r = await updateChapterSummary(
         resolveWorkToken(args),
