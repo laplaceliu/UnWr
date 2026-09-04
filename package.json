@@ -1,6 +1,6 @@
 {
   "name": "unwr-workspace",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "UnWr — Unlimited Writing. 无限写作，小说写作 AI 智能体，DSH 插件。",

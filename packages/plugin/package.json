@@ -1,6 +1,6 @@
 {
   "name": "@laplaceliu/unwr",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "UnWr — Unlimited Writing. 无限写作，小说写作 AI 智能体，DeepSeek Harness 组合包（bundle）。",
   "license": "MIT",
