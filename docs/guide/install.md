@@ -1,236 +1,179 @@
 # 安装指南
 
-把 UnWr 从源码装到能跑通端到端测试，全流程大约 15-20 分钟。
+## 前置
 
-## 1. 前置条件
-
-| 工具 | 版本要求 | 备注 |
+| 工具 | 版本 | 说明 |
 |---|---|---|
-| Node.js | `^22.19.0` 或 `>=24` | `package.json` 的 `engines` 字段 |
-| pnpm | `>=11.7.0` | 已写在 `packageManager` |
-| DSH 源码 | 最新 | 必装，DSH 未发布到 npm。clone 到 `../dsh/`（与 `UnWr/` 同级在 `github.com/` 下） |
-| lark-cli | `>=1.0` | 飞书官方 CLI，全局安装一次 |
+| Node.js | `>=24` | DeepSeek Harness 要求 |
+| lark-cli | `>=1.0` | 飞书官方 CLI；`npx @larksuite/cli@latest install` |
 
-**安装命令：**
+DSH 本身不需要单独装——`npx @deepseek-ai/dsh ...` 即可。**DSH 不是全局可执行**，所有命令都必须带 `npx @deepseek-ai/dsh` 前缀。嫌长可以：
 
 ```bash
-# DSH 源码（必装；DSH 不发 npm，必须本地 clone）
-git clone https://github.com/deepseek-ai/deepseek-harness.git ../dsh
-
-# lark-cli（一次，全局）
-npm i -g @larksuite/cli
-
-# 验证
-node --version         # 22.19+ / 24+
-pnpm --version         # 11.7+
-lark-cli --version
-ls ../dsh/packages/subagent/tool-subagent   # 应存在
+echo "alias dsh='npx @deepseek-ai/dsh'" >> ~/.zshrc && source ~/.zshrc
 ```
 
 ---
 
-## 2. 克隆与安装
+## 方式 A：从 npmjs 安装（推荐）
 
 ```bash
-git clone https://github.com/<your-org>/UnWr.git
-cd UnWr
-pnpm install
+# 1. 装 lark-cli（官方推荐方式）
+npx @larksuite/cli@latest install
+
+# 2. 初始化飞书应用凭证（交互式填 App ID / App Secret，仅一次）
+lark-cli config init
+
+# 3. OAuth 登录（浏览器扫码 + --recommend 自动选常用 scope）
+lark-cli auth login --recommend
+
+# 4. 启动 DSH（首次会下载 @deepseek-ai/dsh 到 npx 缓存）
+npx @deepseek-ai/dsh web
+# 默认监听 http://127.0.0.1:3080
+
+# 5. 安装 UnWr 到 web profile（实测：内部是 pnpm add -D 转发）
+npx @deepseek-ai/dsh plugin --profile web add @laplaceliu/unwr@latest
+# 默认会锁在 ^0.1.0（旧版）——务必带 @latest 或显式 @0.1.3
+# 升级到当前已装版本的最新：npx @deepseek-ai/dsh plugin --profile web update @laplaceliu/unwr
+# （update 不扩范围；要升 major 仍需 add @<version>）
+
+# 6. 确认 UnWr 已在 web profile 的 bundles（让 cordis.patch.yml 加载）
+grep -A 6 '"dsh"' ~/.dsh/profiles/web/package.json
+# 应看到 dsh.profile.bundles 含 "@laplaceliu/unwr"
+
+# 7. 重启 DSH（cordis patch 不热重载，必须重启）
+npx @deepseek-ai/dsh web
 ```
 
-`pnpm install` 会自动：
-- 安装 4 个本地包（`schema` / `feishu` / `novel` / `web`）的 workspace 链接
-- 把 DSH 依赖通过相对路径 `link:../../dsh/...` 链上
-- **触发 `scripts/setup-dsh-links.mjs`**：检测 DSH 源码是否在 `../dsh/`，不在则提示重定向
+打开 http://127.0.0.1:3080 ，主会话里输入 `列出我的作品` 即可验证 UnWr 工具集已加载。
 
-> **DSH 依赖必须装在仓库根**——`pnpm` 严格布局下 `dist/unwr-novel.mjs` 向上查找 `node_modules` 只会看到根目录；装在 `packages/novel/` 下宿主 DSH 加载插件时直接 `ERR_MODULE_NOT_FOUND`（已实测）。
-
-### DSH 源码不在默认位置？
+### 验证插件已加载
 
 ```bash
-# 例：DSH 在 /opt/dsh
-pnpm setup:dsh
-# 按提示输入 DSH 绝对路径（重写 package.json 的 link 目标，不写回 git）
+npx @deepseek-ai/dsh --profile web --dump-config
+# 应看到 unwr-novel + unwr-web 两个插件块，7 个 novel_agent_* 子代理
+```
+
+### 自定义端口
+
+```bash
+npx @deepseek-ai/dsh web --port 3081
 ```
 
 ---
 
-## 3. 配置 lark-cli 认证
-
-DSH 插件通过 `lark-cli` 与飞书交互，需要一次 OAuth 登录：
+## 方式 B：从 tarball 安装
 
 ```bash
-lark-cli login
-# 按提示在浏览器完成授权；token 写到 ~/.lark-cli/config.json
-```
+# 下载 tarball：从 https://github.com/laplaceliu/UnWr/releases
+# 或从 https://www.dsh.so/zh/artifact/unwr/ 下载
 
-> **DSH 沙箱不传播用户级 env**（Windows 实机 2026-09-03 确认）——所以 `lark-cli` 必须在宿主机 PATH 里能找到，或者显式设置 `UNWR_LARK_BIN=<绝对路径>`。
+npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh plugin --profile web add ./unwr-0.1.3.tgz
+# tarball 安装完默认是 file: 引用（不会自动升版），要升级就 re-add
+npx @deepseek-ai/dsh web
+```
 
 ---
 
-## 4. 配置环境变量
+## 方式 C：DSH Desktop（macOS / Windows）
 
-把以下写进 `~/.zshrc` / `~/.bashrc`（或 `~/.zshenv` / `~/.bashenv`，让非交互 shell 也能读到）：
+桌面客户端 https://www.dshdesktop.cn/ （仅 macOS + Windows）。
 
-```bash
-# 必填：UnWr 仓库绝对路径（cordis.yml 用 !!js process.env.UNWR_ROOT 拼插件绝对路径）
-export UNWR_ROOT="$HOME/Source/github.com/<your-org>/UnWr"
+1. 下载并安装 DSH Desktop
+2. 启动后在插件市场搜索 **UnWr** → 一键安装
+3. 在主对话输入 `列出我的作品` 验证
 
-# 必填（e2e 时）：测试用飞书 Base token；先跑 pnpm test:setup-base 拿到再回填
-export UNWR_TEST_BASE="<TEST_BASE>"
-
-# 可选：lark-cli 绝对路径（DSH 沙箱不传播 env 时用）
-# export UNWR_LARK_BIN="/usr/local/bin/lark-cli"
-
-# 可选：调试 selfheal 退避过程
-# export UNWR_DEBUG_SELFHEAL=1
-
-# 可选：覆盖作品注册表路径（默认 ~/.unwr/work-state.json）
-# export UNWR_STATE_FILE="/tmp/unwr-test-state.json"
-
-# DSH headless（无人值守 e2e）必填
-export DSH_PERMISSION_MODE="danger-full-access"
-export DSH_TELEMETRY_DISABLED="1"
-```
-
-加载后验证：
-
-```bash
-source ~/.zshrc
-echo "$UNWR_ROOT"      # 必须是绝对路径，且与 $PWD 一致
-which lark-cli
-```
-
-> **PATH 撑爆警告**：每次新 shell `source ~/.zshrc` 都可能让 `PATH` 越来越长（zshrc 末尾的多条 `export PATH=...$PATH:...`）。如果 `echo $PATH` 返回 800+ 字符且简单 `echo hi` 还正常——是 PATH 撑爆，工具链没坏。一次性修复：在 zshrc 末尾加
-> ```bash
-> PATH=$(printf '%s' "$PATH" | tr ':' '\n' | awk '!seen[$0]++' | paste -sd: -); export PATH
-> ```
+GitHub：https://github.com/anywhere-labs/dsh-desktop
 
 ---
 
-## 5. 构建插件
+## lark-cli 找不到 / 路径不对
 
-```bash
-pnpm build            # esbuild 出 dist/unwr-novel.mjs + dist/unwr-web.mjs
-pnpm verify:bundle    # 校验 dist 产物 + 插件可见性
+**症状**：DSH 启动后报 `failed to spawn lark-cli: …` 或 `lark-cli not found`。
+
+**原因**：DSH 沙箱不传播用户级 env（Windows 服务化 / 托运行尤其明显），PATH 里的 `lark-cli` 插件进程看不到。
+
+**解决**——任选一种：
+
+```yaml
+# ~/.dsh/profiles/web/cordis.patch.yml 的 unwr-novel 块（推荐，部署级显式）
+larkBin: /usr/local/bin/lark-cli
+# 或 Windows：
+larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
 ```
 
-预期：`dist/` 下两个 `.mjs`，`verify:bundle` 全部 `OK`。
+```bash
+# 或环境变量（写进 ~/.zshrc / ~/.bashrc）
+export UNWR_LARK_BIN="/usr/local/bin/lark-cli"
+```
+
+> 解析优先级：`larkBin` 配置 > `UNWR_LARK_BIN` env > Windows 常见安装路径 > `PATH`。
+
+## 服务器 / 无浏览器环境登录
+
+`lark-cli config init` 和 `lark-cli auth login` 默认是交互式（开浏览器 + 扫码）。**服务器上**走设备码：
+
+```bash
+# 1. 初始化凭证
+lark-cli config init   # App ID / App Secret 可通过环境变量 LARK_APP_ID / LARK_APP_SECRET 传入
+
+# 2. 设备码登录（不阻塞，返回 URL + device_code）
+lark-cli auth login --no-wait --device-code
+# 把输出的 URL 发给用户；用户浏览器里走完流程
+
+# 3. 用户完成后恢复轮询
+lark-cli auth login --device-code <DEVICE_CODE>
+```
+
+## 多账号切换
+
+```bash
+lark-cli auth list                # 列出已认证用户
+lark-cli auth login --domain calendar,task   # 按域授权
+lark-cli auth logout              # 登出
+```
 
 ---
 
-## 6. 同步到 DSH profile
+## 端到端验证
 
-DSH 通过 `~/.dsh/profiles/<profile>/cordis.patch.yml` 加载插件：
+启动 DSH 后，在主对话里跑一次完整工作流：
 
-```bash
-pnpm sync:patch
-# 默认同步到 ~/.dsh/profiles/web/cordis.patch.yml
+```
+1. 列出我的作品                    → novel_manage_work action=list
+2. 创建作品（传入飞书 Base token） → novel_manage_work action=create
+3. 写第一章                        → novel_agent_drafter + novel_write_chapter
+4. 沉淀记忆 + 评审                 → novel_update_summary + novel_agent_critic
 ```
 
-`profiles/web/cordis.patch.yml` 里 `!!js process.env.UNWR_ROOT` 拼出插件绝对路径。**`sync:patch` 默认拒绝覆盖**：发现实机副本与 canonical 不同时会 diff 并暂停——这通常是历史 workaround 的副作用（例：实机副本缺 `unwr-web` 块是因为有人手摘过它），先搞清再 `--force`。
-
-确认已生效：
+或用无人值守 profile 跑 headless（实机 2026-09-04 实测通过）：
 
 ```bash
-ls -la ~/.dsh/profiles/web/cordis.patch.yml
-npx @deepseek-ai/dsh --profile web --dump-config   # 看插件树（不起服务）
+# 用 unwr-agent profile（自带 headless overlay + UnWr 插件）
+npx @deepseek-ai/dsh --profile unwr-agent "用 novel_manage_work 列出我的所有作品"
+# 退出码 0 = 成功；最后一行 stdout 是 UNWR_WORK_BASE=<token>（headless 报告尾行约定）
+# 需要 DSH_PERMISSION_MODE=danger-full-access + DSH_TELEMETRY_DISABLED=1
 ```
-
-应能看到 `unwr-novel` + `unwr-web` 两个插件块，以及 7 个 `novel_agent_*` 子代理。
 
 ---
 
-## 7. 启动 DSH
+## 故障排查
 
-### 方式 A：DSH web 模式（人值守）
-
-```bash
-timeout 25 npx @deepseek-ai/dsh web   # exit 124 = 存活过加载期
-```
-
-实机部署：
-
-```bash
-npx @deepseek-ai/dsh web &   # 后台
-# 等 3-5 秒，curl 验证
-curl -s http://127.0.0.1:3080/health
-# 停止
-pkill -f "dsh web"
-```
-
-> 当前仓库的 `unwr-web` 插件**只提供 API 路由与静态壳**——前端 UI 工作台暂未启用也不在用。一切交互通过 DSH 主会话与工具调用完成。
-
-### 方式 B：DSH headless（无人值守 e2e）
-
-```bash
-# 一次性：装好无人值守 profile（带 unwr-agent 角色 + headless overlay）
-node scripts/setup-test-base.mjs --install-agent-profile
-# 产物在 ~/.dsh/profiles/unwr-agent/
-
-# 跑测试任务
-npx @deepseek-ai/dsh --profile unwr-agent "<任务描述>"
-```
-
-> `unwr-agent` profile 是 `web/cordis.patch.yml` + `agent/headless-overlay.yml` 叠加；overlay 禁用 `user-questions`、覆盖 persona，最后一行 stdout 是 `UNWR_WORK_BASE=<token>`（供 agent-verify 验收脚本解析）。
-
----
-
-## 8. 验证
-
-### 工具探针（无需真飞书）
-
-```bash
-pnpm test:tools
-```
-
-预期：38 发探针覆盖 28/28 工具，逐项 `✓`；尾部 `JSON 汇总` 列出每个工具的实测参数坑（如某工具 `--limit` 上限、某字段枚举值等）。
-
-### 创建测试 Base（一次性）
-
-```bash
-pnpm test:setup-base
-# 输出: UNWR_TEST_BASE=<token>  UNWR_WORK_URL=https://...
-```
-
-把输出的 `UNWR_TEST_BASE` 写进 `~/.zshrc`（见 §4）。
-
-> **Base 有时效**——新建的 bitable 在飞书搜索索引里有分钟级延迟，刚建的作品 `novel_manage_work action=list` 可能搜不到；插件用 `~/.unwr/work-state.json` 跨进程持久化兜底（搜索不到时本地独有条目标 `source: 'local'` + warnings）。
-
-### 端到端（领域 + 错误分支）
-
-```bash
-pnpm test:e2e       # 需 UNWR_TEST_BASE；跳过未设置的 it.skipIf
-```
-
-### 全链路编排（DSH headless 跑完整写一部短篇）
-
-```bash
-pnpm test:agent
-# 564s（按 2026-09-02 实测）；无需 playwright
-```
-
-预期：报告尾行 `UNWR_WORK_BASE=<token>`；`packages/novel/scripts/agent-verify.ts` 落库验收——验证人物状态 / 事件 / 伏笔等关键记录是否真实入库（不轻信模型自报）。
-
----
-
-## 9. 故障排查
-
-| 现象 | 排查 |
+| 现象 | 解决 |
 |---|---|
-| `pnpm install` 报 `ERR_MODULE_NOT_FOUND` 找不到 `@deepseek-ai/cordis` | DSH 源码不在 `../dsh/`；跑 `pnpm setup:dsh` 重定向 |
-| `pnpm test:setup-base` 报 `lark-cli: command not found` | `lark-cli` 不在 PATH；设 `UNWR_LARK_BIN` 显式指定绝对路径 |
-| `pnpm sync:patch` 报"拒绝覆盖" | 实机副本与 canonical 不同；先 diff，搞清原因再 `--force` |
-| `pnpm test:agent` 报 `DSH_PERMISSION_MODE not set` | 漏设环境变量；headless 模式必填 `danger-full-access` |
-| `npx dsh web` 启动崩溃 `cannot get property "webServer" without inject` | 罕见（web plugin 已修）；重启 DSH 进程即可 |
-| 工具报 `unknown tool` | 检查 `cordis.patch.yml` 里 `toolFilter.allow` 是否包含该工具名；DSH 进程是否已重启 |
-| 字数 / 排版错误的提示 | `pnpm typecheck` 强类型；`pnpm test` 看 vitest 回归 |
-| PATH 撑爆 (`参数列表过长`) | 见 §4 PATH 撑爆警告 |
-| 启动时出现大量 "章节表 link 回填未落库……退避重试 1/3……" | 飞书 link 列写入延迟的正常现象（selfheal 自动退避）；非错误 |
+| `lark-cli: command not found` | 见 "lark-cli 找不到 / 路径不对" |
+| `npx: command not found` | Node 不在 PATH。先 `which node` 验证；nvm 用户跑 `nvm use 24`；apt 用户跑 `sudo apt install nodejs npm` |
+| `dsh: command not found` | dsh 不是全局命令，必须用 `npx @deepseek-ai/dsh ...`；嫌长加 alias：`echo "alias dsh='npx @deepseek-ai/dsh'" >> ~/.zshrc && source ~/.zshrc` |
+| 工具报 `unknown tool` | 未重启 DSH；改完 bundle 必须 `Ctrl+C` 重启 |
+| 启动后看不到 28 工具 | `npx @deepseek-ai/dsh --profile web --dump-config` 看 `unwr-novel` 块；权限问题跑 `lark-cli auth status` |
+| `npx` 长时间无响应 | 首次会下载 `@deepseek-ai/dsh` 到 `~/.npm/_npx`，等 30-60s；可用 `npx @deepseek-ai/dsh@<版本>` 锁版本加速 |
+| `lark-cli auth status` 显示未登录 | 跑 `lark-cli auth login --recommend`；服务器环境走 `lark-cli auth login --no-wait --device-code` |
+| Windows 装 DSH Desktop 失败 | 确认系统 ≥ Windows 10；官方仅支持 macOS + Windows |
+| 端口 3080 被占用 | `npx @deepseek-ai/dsh web --port 3081` |
 
 ---
 
 ## 下一步
 
-- 看 [usage.md](./usage.md) 了解如何用 28 个工具 + 7 个子代理组织一次完整的写章工作流
-- 看 [`../requirements/`](../requirements/) 了解数据模型 / 智能体矩阵 / 题材预设 / 记忆与一致性 的设计原理
-- 看 [`../tech/`](../tech/) 了解关键技术决策（spawn lark-cli 而非 SDK、cordis 链接、plugin-inject 契约等）
+- [usage.md](./usage.md) — 28 工具详细用法 + 编排流程
