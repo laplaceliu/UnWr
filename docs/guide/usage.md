@@ -1,263 +1,313 @@
 # 使用手册
 
-面向**主编排官**（DSH 主会话内的模型）。所有功能都通过 `novel_*` 工具调用落地。
+**面向真人用户**：你不需要记任何工具名或命令。和主编排官（DSH 主会话里的 AI）说话就行——它会判断你的意图，调起合适的子代理去执行。
 
 ---
 
-## 1. 编排流程
+## 角色一览（你不用记，但读懂提示能更好协作）
 
-```
-DSH 主会话 = 主编排官（不单独注册）
-    │
-    │ 调 1 个 novel_agent_* 委托工具
-    ▼
-7 个子代理（受 persona 约束 + toolFilter 硬约束）
-    │
-    │ 调 novel_* 工具（28 个）
-    ▼
-飞书 bitable (13 表) + docx (章节正文)
-```
+| 角色 | 你跟它互动时它是什么 | 适合的对话 |
+|---|---|---|
+| **主编排官** | 主对话里的 AI，是总指挥 | 你平时直接对它说话 |
+| **世界观设定官** | 背景与体系专家 | "加个新势力 / 补个新设定" |
+| **人物官** | 人物档案管理员 | "记录陆铮现在在哪 / 新增配角" |
+| **大纲官** | 章节规划师 | "给我列卷三大纲 / 这一卷主线是什么" |
+| **起草官** | 写手 | "写第 12 章" |
+| **改稿官** | 编辑 | "第 8 章第三段太啰嗦，改紧凑点" |
+| **评审官** | 审稿人 | "审一下第 3 到 10 章" |
+| **卡文救援官** | 帮你想支线的陪练 | "下一章我不知道怎么写，给我几条思路" |
 
-**核心规则**：
-
-1. **每次调子代理前先 `novel_manage_work action=list`**——不传 `workToken` 时用会话级默认作品
-2. **子代理只能看 `toolFilter.allow` 列出的工具**——是硬约束（DSH 引擎层过滤），即使 persona 写了也调不到
-3. **`novel_manage_work` 进一步限到 `list` / `get_config`**——子代理只能查不能切 / 创；切创必须主会话
-4. **委托范围纪律**：删改已有正文 → 改稿官（toolFilter 有 `novel_revise_chapter`）；跨表核对不要塞给设定官
+> 通常你只跟**主编排官**说话。它背后把任务派给谁由它自己判断。你也可以直接@某角色（在主对话说"请改稿官处理"），但**不推荐**——初学让总指挥调度更稳。
 
 ---
 
-## 2. 28 工具快速索引
+## 1. 从零写一部小说（必读场景）
 
-### 作品管理（1）
+哪怕你只有一句话的灵感，也能让主编排官跑出一部作品。
 
-```json
-novel_manage_work { "action": "list" }
-novel_manage_work { "action": "create", "workToken": "<BASE_TOKEN>", "name": "洗骨录", "genre": "中文网文", "subgenre": "玄幻", "scale": "长篇连载", "mode": "协作助手", "pov": "第三人称限知", "targetWords": 1000000 }
-novel_manage_work { "action": "switch", "workToken": "<BASE_TOKEN>" }
+### 1.1 初级用户：一句话起步
+
+**提示**：
+> 帮我写一部玄幻网文，主角叫陆铮，从底层崛起，目标 100 万字。
+
+**主编排官会做**（你**不用管**它怎么做）：
+1. 问你要不要新建作品，还是在已有作品上写（你只要说"新建"）
+2. 调**世界观设定官**起底——世界规则、势力、功法
+3. 调**人物官**建陆铮档案
+4. 调**大纲官**分卷，列前 30 章大纲
+5. 调**起草官**写第 1 章
+6. 调**人物官**录章末状态（陆铮去到哪了、拿了什么）
+7. 调**评审官**过一遍（一致性 / 红线）
+8. 报告给你："第 1 章写完，2500 字，建议追读通过"
+
+**你继续说**：
+> 继续写第 2 章
+
+主编排官自动接力——它记得陆铮现在在第二章末尾、剑心藏有异象（第 1 章埋伏笔）等。**除非你显式换作品，否则它一路写下去。**
+
+### 1.2 高级用户：给完整 brief
+
+**提示**（一次性给齐）：
+> 新建作品：赛博朋克侦探，主角陈镜，32 岁，前港警，黑客义体改造，搭档 AI "白噪"。题材：**类型小说**（重诡计 / 重逻辑自洽），目标 30 万字。开场：雨夜，陈镜接了一起 AI 替雇主杀人的案子，受害者是他的旧识。**第 1 章必须出现**：①案子接单过程 ②白噪对受害者的初次推理 ③一个让读者怀疑"陈镜才是凶手"的镜头。第一卷（10 章）目标：完成第一个诡计揭穿。叙事视角：第三人称限知（贴近陈镜）。
+
+**主编排官会做**：每一步都按你 brief 里的具体约束走，**不会自作主张换设定**。
+
+### 1.3 续写一部已有作品
+
 ```
+你: 查查"洗骨录"现在的进度
+主编: 当前 14 章写到，主线 73%，伏笔剩余 7 条未回收。
+      上一章是陆铮识破白衍身份。
 
-> 作品注册表存在 `~/.unwr/work-state.json`（仓库外），重启 DSH 进程后默认作品自动恢复。**新建 bitable 在飞书搜索索引里分钟级延迟**——list 时本地独有条目标 `source: 'local'` + warnings。
-
-### 实体管理（3）
-
-```json
-novel_manage_character { "action": "upsert", "name": "陆铮", "alias": "陆小侯爷", "role": "主角", "firstAppearanceChapter": 1 }
-novel_manage_relation  { "action": "upsert", "type": "师徒", "characterA": "陆铮", "characterB": "白衍", "intensity": 5 }
-novel_manage_setting   { "action": "query", "category": "功法" }
-```
-
-> 跨子代理并发 upsert 容易丢 link（飞书服务端静默丢 link 字段）。
-
-### 上下文构建（1）
-
-```json
-novel_build_context { "chapterNo": 12 }
-```
-
-返回：`meta`（题材/视角）+ `writingGuide`（题材约束的唯一来源）+ 前后各 3 章 + 当前卷 + 出场人物 + 伏笔 + 最近事件 + 相关记忆。**写章前必调**。
-
-### 章节正文（4）
-
-```json
-// 写第 12 章
-{
-  "chapterNo": 12,
-  "title": "陆铮初入听剑阁",
-  "content": "## 场景一：入门考核\n\n陆铮踏进听剑阁的正门……\n\n## 场景二：剑诀初试\n\n……",
-  "cast": ["陆铮", "白衍", "周长老"]
-}
-
-// 读章节
-novel_read_chapter { "chapterNo": 12, "mode": "outline" }   // full | outline | search
-novel_read_chapter { "chapterNo": 12, "mode": "search", "query": "听剑阁" }
-
-// 追加
-novel_append_chapter { "chapterNo": 12, "content": "……" }
-
-// 列场景（先看再改）
-novel_list_scenes { "chapterNo": 12 }
-```
-
-> - 正文首行必须是 H1 章标题（`# 第12章 ……`），工具会规范化
-> - `cast` 必传——双向写入章节表.出场人物 + 人物表.出场章节
-> - 名字尾随括号（`陆铮（不在场）`）自动拆分
-
-### 改稿（3）
-
-```json
-// 块内精确替换
-{
-  "action": "patch",
-  "chapterNo": 12,
-  "match": "陆铮踏进听剑阁的正门",
-  "substitute": "陆铮踏进听剑阁的东侧门",
-  "scene": "场景一：入门考核"
-}
-
-// 跨段落（按段落定位）
-{
-  "action": "patch",
-  "chapterNo": 12,
-  "match": "……应了一声，转身离去。\n\n周长老目送他远去。",
-  "substitute": "……沉默片刻，点了点头。\n\n周长老轻轻叹了口气。",
-  "startParagraph": 5, "endParagraph": 6
-}
-
-// 块区间（推荐）
-{
-  "action": "patch",
-  "chapterNo": 12,
-  "match": "……",
-  "substitute": "……",
-  "startBlockId": "blk_abc", "endBlockId": "blk_def"
-}
-
-// 块后插入（expand 不支持区间）
-{ "action": "insert_after", "chapterNo": 12, "blockId": "blk_abc", "newBlock": "……" }
-
-// 整段扩写
-{ "action": "expand", "chapterNo": 12, "scene": "场景一", "appendix": "（续）……" }
-
-// 看历史 + 回滚
-novel_get_chapter_history { "chapterNo": 12 }
-novel_restore_chapter { "chapterNo": 12, "revisionId": "rev_20260903_xxx" }
-```
-
-> **零 I/O 守卫**（执行前拒错）：
-> - `match` 含 `\n` 但未指定 `startBlockId/endBlockId` 或 `startParagraph` → "match 跨段落，请改用块区间"
-> - `startBlockId/endBlockId` 与 `startParagraph/endParagraph` 混用 → 拒错
-> - `expand` + 区间 → 拒错（expand 是单点插入）
-
-### 记忆沉淀（5）
-
-```json
-// 章节摘要（扁平字段，不是数组）
-{
-  "chapterNo": 12,
-  "scene": "听剑阁入门",
-  "events": [{ "summary": "陆铮通过入门考核" }],
-  "characterChanges": [{ "character": "陆铮", "from": "民间游侠", "to": "听剑阁外门弟子" }],
-  "newInfo": "听剑阁入门考分三关：剑意、剑招、剑心",
-  "newForeshadows": ["陆铮的剑心藏有异象"],
-  "endState": "陆铮正式入门，白衍在暗处观察",
-  "freeform": ""
-}
-
-// 章末状态
-{ "chapterNo": 12, "character": "陆铮", "location": "听剑阁", "physicalState": "轻微疲劳", "mentalState": "警觉", "inventory": ["灰布剑"] }
-
-// 事件
-{ "chapterNo": 12, "name": "陆铮通过入门考核", "summary": "三关皆过", "participants": ["陆铮", "周长老"], "isTurningPoint": true }
-
-// 卷/全书摘要（先查再写，避免堆重复行）
-{ "action": "query", "level": "卷", "titleContains": "听剑卷" }
-
-// 改稿后标陈旧
-{ "chapterNo": 12 }
-```
-
-> **`newInfo` 必须是扁平对象**（不是数组、不是嵌套）；常见错误形态 `{item, newForeshadows, endState, freeform}`——工具 description 里有正确示例。
-> **事件并发写入会丢 link**——5 条 record_event 同 step 发出时 link 回填 60% 静默失败（已实测）；必须串行。
-
-### 一致性检查（3）
-
-```json
-novel_run_consistency_check     { "chapterNo": 12 }
-novel_get_semantic_check_pack   { "chapterNo": 12 }
-novel_get_review_focus          {}    // 开评前必调
-```
-
-返回 `issues[]`（按题材权重排序）、`genreFocus`（题材专项评估点）、`contentRedLines`（三档：严禁 / 高危 / 审慎）。
-
-### 大纲 / 伏笔 / 剧情线 / 分支（4）
-
-```json
-novel_manage_foreshadow { "action": "upsert", "type": "人物", "content": "陆铮的剑心藏有异象", "plantChapter": 12, "status": "已埋设" }
-novel_manage_plotline   { "action": "upsert", "name": "听剑卷主线", "stage": "铺垫", "chapters": [12, 13, 14] }
-novel_manage_outline    { "action": "upsert", "chapterNo": 12, "title": "...", "keyPoints": ["通过考核", "暗访白衍"] }
-novel_manage_branch     { "action": "upsert", "chapterNo": 12, "branchName": "冲突版", "divergence": "...", "status": "候选" }
-```
-
-### 节奏 / 规划（4）
-
-```json
-novel_calculate                  { "chapterNo": 12 }
-novel_breakthrough_planning      { "chapterNo": 12, "strategy": "爽点密度突变" }
-novel_advance_character_arc      { "character": "陆铮", "from": "游侠", "to": "弟子", "triggerChapter": 12 }
-novel_record_chapter_tension     { "chapterNo": 12, "level": 4, "note": "高潮起势" }
+你: 写第 15 章
+主编: 好。第 15 章按你的指示起——先放本章梗概：
+      "陆铮夜访王府旧档，撞见白衍真身"
+      字数 2500，结尾有钩子。开始写——
 ```
 
 ---
 
-## 3. 7 个子代理
+## 2. 三种题材的真实体感
 
-实际 `dsh --profile web --dump-config` 输出（手测）：
+主编排官会根据你在建作品时选的题材，让下游代理按对应的写作风格走。
 
-| 子代理 | toolFilter.allow | 职责 | 调用时机 |
-|---|---|---|---|
-| **世界官** | `novel_manage_setting` / `novel_manage_foreshadow` / `novel_manage_plotline` / `novel_manage_character` / `novel_manage_relation` / `novel_read_chapter` / `novel_manage_work` | 设定 / 伏笔 / 剧情线 + 必要时补人物 | 需新增/修订设定或伏笔时 |
-| **人物官** | `novel_manage_character` / `novel_manage_relation` / `novel_record_character_state` / `novel_read_chapter` / `novel_manage_work` | 人物 / 关系 / 章末状态快照 | 起草官完成一章后录状态；需新增人物 |
-| **大纲官** | `novel_manage_outline` / `novel_manage_foreshadow` / `novel_manage_plotline` / `novel_record_event` / `novel_build_context` / `novel_read_chapter` / `novel_manage_work` | 大纲 / 伏笔 / 剧情线 + 事件挂载 | 主编排官做卷规划 |
-| **起草官** | `novel_build_context` / `novel_write_chapter` / `novel_append_chapter` / `novel_update_summary` / `novel_record_character_state` / `novel_record_event` / `novel_manage_outline` / `novel_revise_chapter` / `novel_list_scenes` / `novel_read_chapter` / `novel_manage_work` | 写章 + 配套记忆 / 改稿 / 场景 | 主编排官决定起草某章 |
-| **改稿官** | `novel_revise_chapter` / `novel_list_scenes` / `novel_read_chapter` / `novel_get_chapter_history` / `novel_manage_character` | 微调刚写完的章节；可调人物档案辅助 | 起草官完成后需打磨细节 |
-| **评审官** | `novel_run_consistency_check` / `novel_get_semantic_check_pack` / `novel_get_review_focus` / `novel_list_scenes` / `novel_read_chapter` / `novel_get_chapter_history` | 一致性 / 红线评审（只读） | 章稿完成 / 主编排官需审稿 |
-| **救火官**（卡文救援） | `novel_build_context` / `novel_manage_branch` / `novel_manage_foreshadow` / `novel_manage_character`（仅 query） / `novel_read_chapter` | 写不下去时生成 3+ 条候选分支到 `novel_manage_branch` | 用户明确说"卡住了" / 起草中断 |
+### 2.1 中文网文
 
-**写章前**起草官必调 `novel_build_context` 取 `writingGuide`；**开评前**评审官必调 `novel_get_review_focus`。
+**典型 prompt**：
+> 这是网文，节奏快一点。第 3 章要让陆铮**当场打脸**欺负他的师兄。
+
+**主编会怎么转译**（你看不到，但写在子代理的 brief 里）：
+- 每章 2500 字左右，2-4 个场景
+- **结尾必须有钩子**——下一章不点开读者就睡不着的程度
+- 爽点密度高：打脸 / 装逼 / 升级，至少 1 个 / 章
+- 不重描写，重动作和对话
+
+### 2.2 类型小说（推理 / 谍战 / 科幻）
+
+**典型 prompt**：
+> 这是本格推理。第 5 章要把第 2 章埋的那条"阳台上的半根烟"用上，但要出乎意料——凶手不是那个外甥，而是被外甥栽赃的管家。**线索要公平**：读者回头看第 2 章时能发现伏笔。
+
+**主编会怎么转译**：
+- 每章 3500 字，3-5 个场景
+- 线索公平 = **关键伏笔在埋设章节必须可被读者发现**，不能事后补
+- 每章至少 1 个误导 / 反转
+- 结尾钩子是"悬念加深"（不是爽点）
+
+### 2.3 纯文学
+
+**典型 prompt**：
+> 这是严肃文学。第 4 章要写陆铮回乡探母，整章**只用一个意象：雨**。**不要任何爽点**，要的是日常的钝痛。
+
+**主编会怎么转译**：
+- 每章 5000 字，4-6 个场景
+- 描述占比高（50%+）
+- 心理 / 氛围重于情节
+- 不强求章末钩子
+- 评审会盯**人物真实性** + **意象统一**
 
 ---
 
-## 4. 一次性写完一章
+## 3. 不同水平用户的协作姿态
+
+| | 初级（让 AI 主导） | 高级（你来主导） |
+|---|---|---|
+| **brief** | "帮我写一部……" | 一次性给齐：题材 / 主角 / 视角 / 伏笔约束 / 卷目标 |
+| **节奏** | "继续写下一章" | 一次只写一章，每章都审；可指定"第 N 章重点处理 X 伏笔" |
+| **审稿** | "审一下最近写的" | "审第 3-10 章，重点检查：(1) 陆铮左手剑伤是否贯穿 (2) 时间线 (3) 与世界观的硬冲突" |
+| **改稿** | "第 5 章读起来不顺" | "第 5 章第二段从'陆铮皱眉'开始，把'皱眉'改成'沉默'，并把后面那句'此事蹊跷'删掉" |
+| **卡文** | "下一章我不知道怎么写" | "第 12 章我想要陆铮首次面对杀师仇人，**但不能真打**——必须用对话撑出张力。给我 3 条候选思路" |
+| **人物** | "补个反派" | "新增反派柳深：陆铮同门师兄，30 岁，黑化原因 = 当年师门放弃他救陆铮。**首次出场**：第 8 章作为'路过'的旁观者被陆铮注意到；正式对手戏从第 18 章开始" |
+| **大纲** | "给我列大纲" | "卷二（11-20 章）大纲，**前置约束**：必须在第 14 章完成白衍的第一次身份反转，第 18 章引入柳深" |
+
+**经验法则**：
+- 越具体的 brief 越省返工。但 brief 越短，AI 自由发挥空间越大，可能出惊喜也可能是惊吓
+- **两阶段**：先用长 brief 试 1-2 章看调性；调性对上了再写 5-10 章；不顺就修 brief
+
+---
+
+## 4. 场景库
+
+### 4.1 日常推进
 
 ```
-1. 主编排官
-   ├─ novel_manage_work action=get             # 确认当前作品
-   └─ novel_build_context chapterNo=12         # 拿分层上下文 + writingGuide
-
-2. 起草官
-   ├─ novel_list_scenes chapterNo=11           # 看上一章衔接
-   ├─ novel_write_chapter chapterNo=12 cast=[…]
-   └─ novel_mark_chapter_memories_stale chapterNo=11
-
-3. 人物官
-   ├─ novel_record_character_state … (多次)
-   └─ novel_record_event … (多次，串行)
-
-4. 主编排官（沉淀 L1 记忆）
-   └─ novel_update_summary chapterNo=12 …      # 扁平字段
-
-5. 评审官
-   ├─ novel_get_review_focus                   # 拿评审重点
-   └─ novel_run_consistency_check chapterNo=12
-   → 如有 blocking：反馈主编排官 → 起草官用 novel_revise_chapter 修复
-
-6. 主编排官
-   └─ 推进 current_chapter=12
+查查"洗骨录"现在的进度
+写第 5 章
+第 5 章陆铮到哪了？现在什么状态？手里有什么？
+这周写了多少字？节奏怎么样？
 ```
 
+**幕后**：
+- "查进度" → 大纲官 / 主角编排官
+- "写第 N 章" → 起草官（含 cast / summary / consistency 全套）
+- "陆铮到哪了" → 人物官
+- "节奏怎么样" → 评审官（字密度 / 钩子 / 爽点指标）
+
+### 4.2 改稿
+
+**新手型**：
+> 第 8 章读起来有点平，能改紧一点吗？
+
+主编排官会调改稿官——改稿官会**先看第 8 章场景列表，再**做局部润色 / 扩写 / 删冗，最后把改过的章节给你看。
+
+**老手型**：
+> 第 8 章第三段（"陆铮皱眉，沉默良久"开始），把"皱眉"换成"沉默"，后面那句"此事蹊跷"删掉。**只改这段**，别动其他。
+> 
+> 第 8 章最后那个钩子（"门外传来脚步声"）太套路了，给我 3 个备选：
+> 1. **更冷**：脚步声停住了
+> 2. **更悬**：脚步声在门外踱来踱去
+> 3. **更反转**：门被风吹开，门外无人
+
+**改稿的禁区**：
+- 不要说"整章重写"——叫你去用**救火官**生成几条分支再选（见 §4.5）
+- 改稿官会**自动**把所有人物状态、记忆、伏笔标陈旧——**不用你提醒**
+
+### 4.3 审稿
+
+**新手法**：
+> 审一下第 3 到 10 章，看看有没有问题。
+
+主编排官 → 评审官：跑全量检查（设定冲突 / 人设偏离 / 伏笔失联 / 时间线 / 红线），按题材权重排序输出。
+
+**老手法**：
+> 审第 3-10 章，三件事：
+> 1. 陆铮左手剑伤（埋设第 3 章）—— 后续章节是否一致？
+> 2. 时间线：第 5 章"天黑前出发"，第 7 章"三天后"是否矛盾？
+> 3. 红线：第 8 章那段审讯描述，**有没踩高危档**（"可写但须满足强约束"那种）？
+>
+> 给我按重要度排序，**前 3 条最严重的先讲**。
+
+**评审官会输出**：
+
+```
+【阻断 1】第 7 章 时间线
+  - 冲突：第 5 章末"天黑前出发"→ 第 6 章"夜半到听剑阁"→ 第 7 章"三天后"
+  - 算术不闭合：第 6 章末到第 7 章时间不连续
+  - 建议：在第 7 章开头加"是日连夜行军"或调整章内时间锚
+
+【建议 2】第 8 章 陆铮剑伤
+  - 第 3 章 "左手腕剑伤" → 第 8 章审讯时改用"右手"握剑
+  - 建议：统一为"左手"
+
+【高危】第 8 章 审讯描述
+  - 触发"刑讯逼供"高危档
+  - 框架内可写（陆铮在正义一方），但需加"刑讯方后来被清算"的因果闭环
+```
+
+### 4.4 大纲与人物
+
+**加人物**：
+> 加个反派柳深：陆铮同门师兄，30 岁，黑化原因 = 当年师门放弃他救陆铮。
+> 首次出场：第 8 章作为"路过"的旁观者。
+> 性格：冷峻、寡言、克制。
+
+主编排官 → 世界观设定官 + 人物官：建档、起设定、规划出场、埋首次登场的大纲。
+
+**加设定**：
+> 我想在第 10 章引入"剑心异象"这个设定——具体含义：剑客突破时内心会出现与剑相合的异象，可能是火、可能是水，各人不同。陆铮的异象是**白衍**的影子（暗示他与白衍有前世羁绊）。
+> 后面所有写陆铮突破的章节都要体现这个。
+
+世界观设定官会：
+- 建"剑心异象"词条
+- 关联到陆铮档案
+- 在"突破"相关的伏笔词条里加一条提示
+
+**改大纲**：
+> 卷二（11-20 章）大纲：必须在第 14 章完成白衍第一次身份反转，第 18 章引入柳深正式对手戏。中间填充你来设计。
+
+大纲官：先列出伏笔依赖图（什么章节必须给什么伏笔），再生成 10 章大纲，最后给你过目。
+
+### 4.5 卡文救援
+
+**新手型**：
+> 下一章我不知道怎么写，给我几条思路。
+
+**老手型**：
+> 我卡在第 12 章。约束：
+> - 陆铮首次面对杀师仇人
+> - **不能真打**（用对话撑张力）
+> - 不能提前揭白衍身份
+> - 必须在结尾留一个让读者怀疑陆铮是凶手身份的钩子（呼应第 1 章的伏笔）
+> 
+> 给我 3 条候选思路（不同方向：偏悬疑 / 偏情感 / 偏反转），分别写 200 字梗概。
+
+**卡文救援官**会调大纲官 + 人物档案，生成 3-5 条候选"分支"——每条都有：场景梗概、关键场景、伏笔调用、字数预估。**不会写正文**，只给方案。
+
+```
+候选 1（偏悬疑）：
+  场景：陆铮在市集偶遇仇人，仇人没认出他。陆铮在"动手"与"不动手"间反复。
+  钩子：仇人临走时说"你的眼睛像一个人"——把"他可能是凶手"反向打到陆铮身上。
+  伏笔：调用第 1 章埋的"陆铮眉眼有异象"（但不解开）
+  字数：2500
+
+候选 2（偏情感）：
+  场景：陆铮在仇人家门口站了一夜，最后没敲门
+  钩子：仇人清晨出门时发现门口有脚印（陆铮的鞋有铁底）
+  ...
+```
+
+**你选 1 个，让起草官按这个写。**
+
+### 4.6 跨章核验
+
+**老手法**：
+> 陆铮的剑心异象在第 1 章、第 7 章都出现过，但第 9 章他突破时**完全没提**，是不是漏了？
+
+主编排官 → 评审官：会调"剑心异象"词条（陆铮档案里关联的设定）→ 检查第 1 / 7 章埋设 → 标记第 9 章的"突破"为漏调用 → 反馈给起草官补修。
+
 ---
 
-## 5. 题材预设
+## 5. 一些"别这样做"
 
-| preset_id | 中文名 | 节奏 | 爽点密度 | 钩子 | 线索公平 | 红线阈值 |
-|---|---|---|---|---|---|---|
-| `webnovel` | 中文网文 | 2500 字 / 章；2-4 场景 | 高（1.5） | 强制 last_para 钩子 | 2 | 3 |
-| `genre_fiction` | 类型小说 | 3500 字 / 章；3-5 场景 | 中（1.0） | 选配 | 3 | 2 |
-| `literary` | 纯文学 | 5000 字 / 章；4-6 场景 | 低（0.5） | 不强制 | 4 | 4 |
-
-**新增题材**：在 `packages/novel/src/genre/presets.ts` 加一组 `GenrePreset` 值——统一维度，差异化取值。
+| 别 | 为什么 | 怎么做才对 |
+|---|---|---|
+| 一次说"把全书写完" | 模型上下文放不下，且没有真监督 | 一章一章推进；每章审完再写下一章 |
+| "第 3 章第 5 段第 2 句话'陆铮皱眉'改成'沉默'" | 改稿官也做得到，但 brief 越精确越好 | "第 3 章第二段（'陆铮皱眉'起）整段重写，意思保留但更克制" |
+| 自己直接说"@改稿官……" | 跳过了主编排官的判断 | 跟主编排官说，让它路由 |
+| 抱怨"AI 自己乱写" | 题材没选对 / brief 不够 | 先确认题材 + brief；调性不对先修 brief，**别改 1 章就换 brief** |
+| 想知道"我现在在哪一章"就 cat 飞书文档 | 主对话不通过工具调底层 | 直接问"现在写到第几章了"——主编排官查记忆即可 |
+| 同一段话里塞 5 个不相关任务 | 模型注意力会散 | 一次一个任务；多任务分多轮说 |
 
 ---
 
-## 6. 故障排查
+## 6. 排错：出问题了跟主编排官怎么说
 
-| 现象 | 解决 |
+| 你看到 | 你应该说 |
 |---|---|
-| 工具报 `未知参数` | 看 `tests/tool-schema.spec.ts`（静态契约） |
-| `novel_revise_chapter` 报 `match 跨段落` | 改用 `startBlockId/endBlockId` 区间 |
-| `novel_update_summary` 报 `newInfo must be array` | 必须是扁平对象不是数组 |
-| `novel_manage_work action=list` 看不到刚建的作品 | 飞书搜索索引延迟；用 `~/.unwr/work-state.json` 兜底 |
-| 章稿写完发现 link 没回填 | selfheal 退避自动重试（3s/6s/9s）；严重时 `pnpm repair-dup-fields <BASE_TOKEN>` |
-| 一致性检查红了一堆 | 先 `novel_get_review_focus` 看题材权重；按权重排序处理 |
-| 子代理报 `unknown tool` | 该工具不在子代理 `toolFilter.allow` 里——不要越权；改用其他子代理或升到主会话调 |
+| AI 把人物名字记错了 | "陆铮不是陆铮的铮，是'铮亮'的铮"（直接纠错） |
+| AI 写偏了题材 | "上一章偏爽文了，这是**类型小说**，重点是逻辑自洽不是爽点" |
+| AI 忘了第 1 章埋的伏笔 | "第 9 章陆铮突破时漏了第 1 章埋的剑心异象，请补上" |
+| AI 拒绝改稿 | "我看过 persona 知道你可以改稿官再确认一下"（99% 是改稿官路由错了，提示路由） |
+| AI 报"未知工具" / 内部错误 | 截图发主对话；**重启 DSH**（cordis patch 不热重载） |
+| AI 一本正经地编造 | 一定是 brief 不够——补 brief，而不是质疑 AI |
+
+---
+
+## 7. 进阶：自测 / 自动化
+
+如果你是开发者想自测端到端，**普通用户可跳过**。
+
+```bash
+# 跑一次完整写一章（约 10-15 分钟）
+npx @deepseek-ai/dsh --profile unwr-agent "帮我写一部玄幻网文，主角陆铮，从底层崛起。写第 1 章"
+
+# 跑 1 小时内多章（更深度）
+npx @deepseek-ai/dsh --profile unwr-agent "用 1 小时写完'洗骨录'前 3 章，并在结尾报告 UNWR_WORK_BASE=<token>"
+```
+
+> `unwr-agent` profile 是 headless 无人值守模式。报告尾行 `UNWR_WORK_BASE=<token>` 是给验收脚本提取用的。
+> 详 `install.md` §"端到端验证"。
+
+---
+
+## 8. 一些"你不必懂"的事
+
+- **不会因为你不专业就出错**——主编排官会按"先贤"模式跑（题材 + 工具集 + 子代理），你只管"我想要什么"
+- **不必指定"我用什么工具"**——你说人话就行
+- **不必担心智能体协作出错**——7 个子代理是工具过滤的硬约束，评审官拿不到任何写工具、卡文救援官只生成方案不写正文
+- **不必担心改稿丢记忆**——改稿后记忆会**自动标陈旧**，下次写新章时自动重对齐
+- **不必担心并发丢数据**——主编排官串行调度子代理（同一表的写入不并发）
+
+## 下一步
+
+- 看 [`install.md`](./install.md) 排查安装问题
+- 看 [`../requirements/03-agent-matrix.md`](../requirements/03-agent-matrix.md) 了解每个子代理的具体边界（如果你想自己改 brief 模板）
