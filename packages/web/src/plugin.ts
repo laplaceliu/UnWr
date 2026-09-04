@@ -32,6 +32,7 @@ import {
   type AgentProfile,
 } from './api.ts'
 import { configureLark } from '../../feishu/src/cli.ts'
+import { readBundleVersion } from './version.ts'
 
 /* ============================== 静态资源 ============================== */
 
@@ -98,7 +99,9 @@ function apiDispatcher(publicDir: string) {
 
     try {
       if (pathname === '/api/health' && method === 'GET') {
-        json(res, 200, { ok: true })
+        // version = 实际加载的本 bundle 所属包版本（运行实例无法从外部
+        // 直接判版本，health 是唯一权威入口；实机排障 2026-09-04）
+        json(res, 200, { ok: true, version: readBundleVersion() })
         return
       }
       if (pathname === '/api/agents' && method === 'GET') {

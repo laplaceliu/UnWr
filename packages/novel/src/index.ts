@@ -32,6 +32,7 @@ import { registerCharacterArcTools } from './tools/character-arc.ts'
 import { registerTensionTools } from './tools/tension.ts'
 import { registerArgumentGuard } from './plugins/argument-guard.ts'
 import { registerWorkContextInjector } from './plugins/work-context-injector.ts'
+import { readBundleVersion } from '../../web/src/version.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools', 'systemPrompt']
@@ -297,7 +298,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   if (config.verbose === true) {
     const mine = registeredToolNames(ctx).filter((n) => n.startsWith('novel_'))
-    console.error(`[unwr] 插件已加载: ${name}`)
+    console.error(`[unwr] 插件已加载: ${name} v${readBundleVersion()}`)
     console.error(`[unwr] 已注册工具 (${mine.length}): ${mine.join(', ')}`)
     const resolved = resolveLarkBinDetailed()
     const sourceLabel =

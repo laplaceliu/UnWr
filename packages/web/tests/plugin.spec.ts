@@ -26,6 +26,16 @@ describe('unwr-web Cordis 契约', () => {
   })
 })
 
+describe('readBundleVersion 版本可见性', () => {
+  it('源码态（packages/web 无 package.json）降级 unknown，绝不抛错', async () => {
+    const { readBundleVersion } = await import('../src/version.ts')
+    // src/version.ts 的 ../package.json 不存在 → 'unknown'；
+    // 发布态（dist/*.mjs）则解析 packages/plugin/package.json 的版本
+    expect(typeof readBundleVersion()).toBe('string')
+    expect(readBundleVersion().length).toBeGreaterThan(0)
+  })
+})
+
 describe('apply 的路由注册', () => {
   function stubCtx() {
     const routes: { kind: string; path: string }[] = []
