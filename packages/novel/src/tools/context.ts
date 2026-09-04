@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { DEFAULT_LAYERS, buildContext } from '../context/builder.ts'
 import { getPreset } from '../genre/presets.ts'
 import { renderTabooBrief } from '../genre/taboos.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 import type { PresetId } from '@unwr/schema'
 
 /** 上下文摘要，模型可见的精简投影。 */
@@ -164,11 +164,9 @@ export function registerContextTool(ctx: Context): void {
     },
     async execute(args, exec) {
       const preset = getPreset((args.presetId ?? 'webnovel') as PresetId)
-      const built = await buildContext(
-        resolveWorkToken(args),
-        args.chapterNo,
-        preset,
-        DEFAULT_LAYERS,
+      const built = await withWorkToken(
+        args,
+        (token, signal) => buildContext(token, args.chapterNo, preset, DEFAULT_LAYERS, signal),
         exec.signal,
       )
       const digest: ContextDigest = {

@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 import { upsertCharacter } from '../domain/entity.ts'
 
 /** 人物弧光阶段：四阶段开放枚举。 */
@@ -32,11 +32,14 @@ export function registerCharacterArcTools(ctx: Context): void {
       },
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      const r = await upsertCharacter(baseToken, {
-        name: args.character,
-        arcStage: args.arcStage,
-      }, exec.signal)
+      const r = await withWorkToken(
+        args,
+        (baseToken, signal) => upsertCharacter(baseToken, {
+          name: args.character,
+          arcStage: args.arcStage,
+        }, signal),
+        exec.signal,
+      )
       const warnings = [
         ...(args.arcStage === '收束' ? ['人物已收束，后续再次推进应改为创建支线或新人物。'] : []),
         ...(r.warnings ?? []),

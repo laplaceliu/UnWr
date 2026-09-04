@@ -20,7 +20,7 @@ import type { MemoryLevel } from '@unwr/schema'
 import type { CellValue } from '@unwr/feishu'
 // 记忆写入必须走自愈包装：旧库缺 link 字段 / 新库收敛期都会报 not_found，
 // 裸调 createRecords 会让章末记忆沉淀整批失败（2026-09-01 实测 8 连挂）。
-import { createRecordWithLinks, createRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
+import { createRecordWithLinks, createRecordsWithSelfHeal, listRecordsWithSelfHeal, updateRecordsWithSelfHeal } from './selfheal.ts'
 
 /**
  * 待写入的字段集合。
@@ -379,7 +379,7 @@ export async function queryBookSummaries(
   signal?: AbortSignal,
 ): Promise<BookSummaryEntry[]> {
   const rows = base.matrixToObjects(
-    await base.listRecords(baseToken, TABLE.MEMORY, {
+    await listRecordsWithSelfHeal(baseToken, TABLE.MEMORY, {
       fieldIds: [
         MEMORY_F.TITLE, MEMORY_F.LEVEL, MEMORY_F.CONTENT,
         MEMORY_F.FROM_CHAPTER, MEMORY_F.TO_CHAPTER,
@@ -430,7 +430,7 @@ export async function upsertBookSummary(
   // 标题不跨层级唯一（卷级与全书可能重名），故在同标题候选里**优先取层级
   // 相同的那条**；层级读不到（字段投影异常）时退回首条，保持旧行为不回退。
   const rows = base.matrixToObjects(
-    await base.listRecords(baseToken, TABLE.MEMORY, {
+    await listRecordsWithSelfHeal(baseToken, TABLE.MEMORY, {
       fieldIds: [MEMORY_F.TITLE, MEMORY_F.LEVEL],
       filter: { logic: 'and', conditions: [[MEMORY_F.TITLE, '==', title]] },
       limit: 10,

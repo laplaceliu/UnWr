@@ -21,7 +21,7 @@
  * @module
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,10 +32,12 @@ const STATE_FILE = join(STATE_DIR, 'work-state.json')
 process.env['UNWR_STATE_FILE'] = STATE_FILE
 
 const {
-  clearWorkStateForTests, getLastWorkToken, knownWorks, mergeWorks,
+  clearWorkStateForTests, getCurrentProfile, getLastWorkToken, knownWorks, mergeWorks,
   rememberWork, rememberWorkToken,
 } = await import('../src/domain/work-store.ts')
-const { noWorkTokenHint, resolveWorkToken } = await import('../src/tools/defaults.ts')
+const {
+  consumeLastResolveInfo, noWorkTokenHint, resolveWorkToken,
+} = await import('../src/tools/defaults.ts')
 
 beforeEach(() => {
   clearWorkStateForTests()
@@ -178,3 +180,76 @@ describe('mergeWorks：搜索结果与本机记录合并（问题 B）', () => {
     expect(mergeWorks([], []).works).toEqual([])
   })
 })
+
+describe('DSH profile 隔离（2026-09-04 实机踩坑追加）', () => {
+  it('UNWR_PROFILE 隔离：profile=A 写的 token 不会污染 profile=B', () => {
+    // 切换 profile=A，写入
+    process.env['UNWR_PROFILE'] = 'profileA'
+    const stateFileA = STATE_FILE.replace('work-state.json', 'profileA/work-state.json')
+    process.env['UNWR_STATE_FILE'] = stateFileA
+    rememberWorkToken('tokA_works_A')
+    rememberWork({ baseToken: 'tokA_works_A', name: '甲' })
+    expect(rawOnDiskFile(stateFileA)).toContain('tokA_works_A')
+    expect(getLastWorkToken()).toBe('tokA_works_A')
+
+    // 切换 profile=B，写入
+    process.env['UNWR_PROFILE'] = 'profileB'
+    const stateFileB = STATE_FILE.replace('work-state.json', 'profileB/work-state.json')
+    process.env['UNWR_STATE_FILE'] = stateFileB
+    rememberWorkToken('tokB_works_B')
+    expect(getLastWorkToken()).toBe('tokB_works_B')
+
+    // 关键：B 写的时候不能读到 A 的 token
+    expect(rawOnDiskFile(stateFileB)).not.toContain('tokA_works_A')
+    expect(rawOnDiskFile(stateFileB)).toContain('tokB_works_B')
+
+    // 切回 A：能读回自己的 token（不需要重新写入）
+    process.env['UNWR_PROFILE'] = 'profileA'
+    process.env['UNWR_STATE_FILE'] = stateFileA
+    expect(getLastWorkToken()).toBe('tokA_works_A')
+
+    // 清理
+    delete process.env['UNWR_PROFILE']
+    delete process.env['UNWR_STATE_FILE']
+  })
+
+  it('resolveWorkToken 的 source=persisted 携带 profile 名（供 warning 用）', async () => {
+    process.env['UNWR_PROFILE'] = 'unwr-agent'
+    const stateFileAgent = STATE_FILE.replace('work-state.json', 'unwr-agent/work-state.json')
+    process.env['UNWR_STATE_FILE'] = stateFileAgent
+    rememberWorkToken('tokAgent')
+
+    // 模拟"新进程冷启动"：重置 modules，让 defaults.ts 的 lastWorkToken 重新初始化
+    vi.resetModules()
+    const { resolveWorkToken: resolveFresh, consumeLastResolveInfo: consumeFresh } =
+      await import('../src/tools/defaults.ts')
+    resolveFresh({})  // 触发 persisted 回退
+    const info = consumeFresh()
+    expect(info).toBeDefined()
+    expect(info?.source).toBe('persisted')
+    expect(info?.profile).toBe('unwr-agent')
+    expect(info?.token).toBe('tokAgent')
+
+    // 清理
+    delete process.env['UNWR_PROFILE']
+    delete process.env['UNWR_STATE_FILE']
+  })
+
+  it('UNWR_PROFILE 优先于 DSH_PROFILE', async () => {
+    process.env['UNWR_PROFILE'] = 'override-profile'
+    process.env['DSH_PROFILE'] = 'dsh-profile'
+    const { getCurrentProfile } = await import('../src/domain/work-store.ts')
+    expect(getCurrentProfile()).toBe('override-profile')
+    delete process.env['UNWR_PROFILE']
+    delete process.env['DSH_PROFILE']
+  })
+})
+
+/** 读任意路径的 state 文件原始内容。 */
+function rawOnDiskFile(path: string): string {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return ''
+  }
+}

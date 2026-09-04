@@ -19,7 +19,7 @@ import {
   queryBookSummaries, recordCharacterState, recordEvent, updateChapterSummary, upsertBookSummary,
   type ChapterSummaryInput,
 } from '../domain/memory.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 
 /** 注册记忆相关工具。 */
 export function registerMemoryTools(ctx: Context): void {
@@ -369,10 +369,9 @@ function registerUpdateSummary(ctx: Context): void {
         ...(typeof args.endState === 'string' ? { endState: args.endState } : {}),
         ...(typeof args.freeform === 'string' ? { freeform: args.freeform } : {}),
       }
-      const r = await updateChapterSummary(
-        resolveWorkToken(args),
-        args.chapterNo,
-        summary,
+      const r = await withWorkToken(
+        args,
+        (token, signal) => updateChapterSummary(token, args.chapterNo, summary, signal),
         exec.signal,
       )
       return { chapterNo: args.chapterNo, ...r }
@@ -413,10 +412,9 @@ function registerCharacterState(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const r = await recordCharacterState(
-        resolveWorkToken(args),
-        args.chapterNo,
-        {
+      const r = await withWorkToken(
+        args,
+        (token, signal) => recordCharacterState(token, args.chapterNo, {
           character: args.character,
           ...args.location === undefined ? {} : { location: args.location },
           ...args.physical === undefined ? {} : { physical: args.physical },
@@ -424,7 +422,7 @@ function registerCharacterState(ctx: Context): void {
           ...args.belongings === undefined ? {} : { belongings: args.belongings },
           ...args.relationChange === undefined ? {} : { relationChange: args.relationChange },
           ...args.summary === undefined ? {} : { summary: args.summary },
-        },
+        }, signal),
         exec.signal,
       )
       return r
@@ -467,10 +465,9 @@ function registerRecordEvent(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      return recordEvent(
-        resolveWorkToken(args),
-        args.chapterNo,
-        {
+      return withWorkToken(
+        args,
+        (token, signal) => recordEvent(token, args.chapterNo, {
           name: args.name,
           ...args.summary === undefined ? {} : { summary: args.summary },
           ...args.location === undefined ? {} : { location: args.location },
@@ -478,7 +475,7 @@ function registerRecordEvent(ctx: Context): void {
           ...args.impact === undefined ? {} : { impact: args.impact },
           ...args.isTurningPoint === undefined ? {} : { isTurningPoint: args.isTurningPoint },
           ...args.participants === undefined ? {} : { participants: args.participants },
-        },
+        }, signal),
         exec.signal,
       )
     },
@@ -548,10 +545,14 @@ function registerBookSummary(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryBookSummaries(resolveWorkToken(args), {
-          ...args.level === undefined ? {} : { level: args.level },
-          ...args.title === undefined ? {} : { keyword: args.title },
-        }, exec.signal)
+        const items = await withWorkToken(
+          args,
+          (baseToken, signal) => queryBookSummaries(baseToken, {
+            ...args.level === undefined ? {} : { level: args.level },
+            ...args.title === undefined ? {} : { keyword: args.title },
+          }, signal),
+          exec.signal,
+        )
         return { action: 'query', total: items.length, items }
       }
       if (args.level !== '卷' && args.level !== '全书') {
@@ -563,15 +564,24 @@ function registerBookSummary(ctx: Context): void {
       if (args.content === undefined || args.content === '') {
         throw new Error('upsert 必须提供 content（摘要正文）。')
       }
-      const r = await upsertBookSummary(
-        resolveWorkToken(args),
-        args.level,
-        args.title,
-        args.content,
-        {
-          ...args.fromChapter === undefined ? {} : { fromChapter: args.fromChapter },
-          ...args.toChapter === undefined ? {} : { toChapter: args.toChapter },
-        },
+      const level = args.level
+      const title = args.title
+      const content = args.content
+      const fromChapter = args.fromChapter
+      const toChapter = args.toChapter
+      const r = await withWorkToken(
+        args,
+        (baseToken, signal) => upsertBookSummary(
+          baseToken,
+          level,
+          title,
+          content,
+          {
+            ...fromChapter === undefined ? {} : { fromChapter },
+            ...toChapter === undefined ? {} : { toChapter },
+          },
+          signal,
+        ),
         exec.signal,
       )
       return {

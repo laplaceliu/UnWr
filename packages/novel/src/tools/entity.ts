@@ -18,9 +18,9 @@ import {
   queryBranches, queryCharacters, queryForeshadows, queryOutline,
   queryPlotlines, queryRelations, querySettings, setChapterOutline, upsertBranch,
   upsertCharacter, upsertForeshadow, upsertPlotline, upsertRelation, upsertSetting, upsertVolume,
-  deleteRelation,
+  deleteRelation, deleteChapterOutline,
 } from '../domain/entity.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { consumeLastResolveInfo, resolveInfoToWarning, withWorkToken } from './defaults.ts'
 
 /** 注册实体管理工具。 */
 export function registerEntityTools(ctx: Context): void {
@@ -74,22 +74,24 @@ function registerSetting(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await querySettings(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => querySettings(token, {
           ...args.keyword === undefined ? {} : { keyword: args.keyword },
           ...args.category === undefined ? {} : { category: String(args.category[0] ?? '') },
-        }, exec.signal)
+        }, signal), exec.signal)
         return { action: 'query', total: items.length, items }
       }
       if (args.term === undefined || args.term === '') {
         throw new Error('upsert 必须提供 term（词条名）。')
       }
-      const r = await upsertSetting(resolveWorkToken(args), {
-        term: args.term,
+      // 提取常量：闭包内 TS 不保留对 args 属性的 narrowing
+      const term = args.term
+      const r = await withWorkToken(args, (token, signal) => upsertSetting(token, {
+        term,
         ...args.definition === undefined ? {} : { definition: args.definition },
         ...args.category === undefined ? {} : { category: args.category },
         ...args.importance === undefined ? {} : { importance: args.importance },
         ...args.status === undefined ? {} : { status: args.status },
-      }, exec.signal)
+      }, signal), exec.signal)
       return {
         action: 'upsert', total: 1, items: [],
         recordId: r.recordId, updated: r.updated,
@@ -134,16 +136,17 @@ function registerCharacter(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryCharacters(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => queryCharacters(token, {
           ...args.name === undefined ? {} : { name: args.name },
-        }, exec.signal)
+        }, signal), exec.signal)
         return { action: 'query', total: items.length, items }
       }
       if (args.name === undefined || args.name === '') {
         throw new Error('upsert 必须提供 name（人物姓名）。')
       }
-      const r = await upsertCharacter(resolveWorkToken(args), {
-        name: args.name,
+      const name = args.name
+      const r = await withWorkToken(args, (token, signal) => upsertCharacter(token, {
+        name,
         ...args.alias === undefined ? {} : { alias: args.alias },
         ...args.role === undefined ? {} : { role: args.role },
         ...args.traits === undefined ? {} : { traits: args.traits },
@@ -151,7 +154,7 @@ function registerCharacter(ctx: Context): void {
         ...args.motive === undefined ? {} : { motive: args.motive },
         ...args.appearance === undefined ? {} : { appearance: args.appearance },
         ...args.arcStage === undefined ? {} : { arcStage: args.arcStage },
-      }, exec.signal)
+      }, signal), exec.signal)
       return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated }
     },
   }))
@@ -161,16 +164,21 @@ function registerOutline(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'novel_manage_outline',
     description: 'Manage the outline: list chapter outlines, write an outline for a chapter, '
-      + 'or create/update a volume. Use this to plan before drafting — a chapter with an '
-      + 'outline drafts much better than one without.',
+      + 'create/update a volume, or **delete a chapter shell** (action=delete_chapter_outline). '
+      + 'Use this to plan before drafting — a chapter with an outline drafts much better than one without. '
+      + 'For deleting a chapter that already has prose, you must first delete the chapter docx via '
+      + 'novel_revise_chapter — delete_chapter_outline refuses to orphan docx documents unless force=true.',
     parameters: {
       workToken: { type: 'string', description: 'Feishu base_token of the work. Optional: defaults to the last work used in this session.' },
       action: {
         type: 'string',
-        enum: ['query', 'set_chapter_outline', 'upsert_volume'],
+        enum: ['query', 'set_chapter_outline', 'upsert_volume', 'delete_chapter_outline'],
         required: true,
       },
-      chapterNo: { type: 'number', description: 'Chapter number. REQUIRED for set_chapter_outline; optional filter for query.' },
+      chapterNo: {
+        type: 'number',
+        description: 'Chapter number. REQUIRED for set_chapter_outline and delete_chapter_outline; optional filter for query.',
+      },
       outline: { type: 'string', description: 'Outline notes for the chapter (set_chapter_outline).' },
       volume: { type: 'string', description: 'Volume name. REQUIRED for upsert_volume; optional for set_chapter_outline.' },
       storyTime: { type: 'string', description: 'In-story time (set_chapter_outline).' },
@@ -183,6 +191,15 @@ function registerOutline(ctx: Context): void {
       summary: { type: 'string', description: 'Volume summary (upsert_volume).' },
       fromChapter: { type: 'number', description: 'Only chapters >= this (query).' },
       toChapter: { type: 'number', description: 'Only chapters <= this (query).' },
+      force: {
+        type: 'boolean',
+        description: 'delete_chapter_outline only. Set true to forcibly delete a chapter that already has prose — '
+          + 'this will ORPHAN the associated docx document, so use only when you know the docx is also being cleaned up.',
+      },
+      reason: {
+        type: 'string',
+        description: 'delete_chapter_outline only. Free-form reason (logged in warnings for traceability).',
+      },
     },
     output: {
       schema: {
@@ -194,21 +211,37 @@ function registerOutline(ctx: Context): void {
           recordId: { type: 'string' },
           updated: { type: 'boolean' },
           created: { type: 'boolean', description: 'true = the chapter shell was auto-created by set_chapter_outline.' },
+          deleted: { type: 'boolean', description: 'delete_chapter_outline only. true = the chapter record was removed from the table.' },
+          blockedByContent: { type: 'boolean', description: 'delete_chapter_outline only. true = refused because the chapter has prose and force was not set.' },
+          warnings: { type: 'array', items: { type: 'string' }, description: 'Human-readable warnings (e.g. "used default work fallback", "force-delete will orphan docx").' },
         },
       },
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
+      // 共用 helper：把 resolveInfo 转成的警告追加到结果。
+      // 显式传入 workToken 时 resolveInfo.source === 'explicit'，warning 是空串，不会噪音。
+      const withResolveWarning = <T extends Record<string, unknown>>(result: T): T & { warnings?: string[] } => {
+        const info = consumeLastResolveInfo()
+        if (info === undefined) return result
+        const w = resolveInfoToWarning(info)
+        if (w === '') return result
+        const merged: string[] = Array.isArray(result['warnings'])
+          ? [...result['warnings'] as string[], w]
+          : [w]
+        return { ...result, warnings: merged }
+      }
+
       if (args.action === 'query') {
-        const items = await queryOutline(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => queryOutline(token, {
           ...args.fromChapter === undefined ? {} : { fromChapter: args.fromChapter },
           ...args.toChapter === undefined ? {} : { toChapter: args.toChapter },
-        }, exec.signal)
+        }, signal), exec.signal)
         // 章节号过滤在 query 时也支持（便于"只看某一章"）
         const filtered = args.chapterNo === undefined
           ? items
           : items.filter((i) => i.no === args.chapterNo)
-        return { action: 'query', total: filtered.length, items: filtered }
+        return withResolveWarning({ action: 'query', total: filtered.length, items: filtered })
       }
 
       if (args.action === 'set_chapter_outline') {
@@ -216,24 +249,57 @@ function registerOutline(ctx: Context): void {
         if (args.outline === undefined || args.outline === '') {
           throw new Error('set_chapter_outline 需要 outline。')
         }
-        const r = await setChapterOutline(resolveWorkToken(args), args.chapterNo, args.outline, {
+        const chapterNo = args.chapterNo
+        const outline = args.outline
+        const r = await withWorkToken(args, (token, signal) => setChapterOutline(token, chapterNo, outline, {
           ...args.volume === undefined ? {} : { volume: args.volume },
           ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
-        }, exec.signal)
-        return { action: args.action, total: 1, items: [], recordId: r.recordId, created: r.created }
+        }, signal), exec.signal)
+        return withResolveWarning({
+          action: args.action,
+          total: 1,
+          items: [],
+          recordId: r.recordId,
+          created: r.created,
+        })
+      }
+
+      if (args.action === 'delete_chapter_outline') {
+        if (args.chapterNo === undefined) throw new Error('delete_chapter_outline 需要 chapterNo。')
+        const chapterNo = args.chapterNo
+        const r = await withWorkToken(args, (token, signal) => deleteChapterOutline(token, chapterNo, {
+          ...args.force === undefined ? {} : { force: args.force },
+          ...args.reason === undefined ? {} : { reason: args.reason },
+        }, signal), exec.signal)
+        return withResolveWarning({
+          action: args.action,
+          total: r.deleted ? 1 : 0,
+          items: [],
+          recordId: r.recordId,
+          deleted: r.deleted,
+          blockedByContent: r.blockedByContent,
+          warnings: r.warnings,
+        })
       }
 
       if (args.volume === undefined || args.volume === '') {
         throw new Error('upsert_volume 需要 volume（卷名）。')
       }
-      const r = await upsertVolume(resolveWorkToken(args), {
-        name: args.volume,
+      const volume = args.volume
+      const r = await withWorkToken(args, (token, signal) => upsertVolume(token, {
+        name: volume,
         ...args.order === undefined ? {} : { order: args.order },
         ...args.theme === undefined ? {} : { theme: args.theme },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.summary === undefined ? {} : { summary: args.summary },
-      }, exec.signal)
-      return { action: args.action, total: 1, items: [], recordId: r.recordId, updated: r.updated }
+      }, signal), exec.signal)
+      return withResolveWarning({
+        action: args.action,
+        total: 1,
+        items: [],
+        recordId: r.recordId,
+        updated: r.updated,
+      })
     },
   }))
 }
@@ -291,16 +357,17 @@ function registerForeshadow(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryForeshadows(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => queryForeshadows(token, {
           ...args.status === undefined ? {} : { status: args.status },
-        }, exec.signal)
+        }, signal), exec.signal)
         return { action: 'query', total: items.length, items }
       }
       if (args.content === undefined || args.content === '') {
         throw new Error('upsert 必须提供 content（伏笔内容）。')
       }
-      const r = await upsertForeshadow(resolveWorkToken(args), {
-        content: args.content,
+      const content = args.content
+      const r = await withWorkToken(args, (token, signal) => upsertForeshadow(token, {
+        content,
         ...args.type === undefined ? {} : { type: args.type },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.importance === undefined ? {} : { importance: args.importance },
@@ -308,7 +375,7 @@ function registerForeshadow(ctx: Context): void {
         ...args.plantChapter === undefined ? {} : { plantChapter: args.plantChapter },
         ...args.planPayoffChapter === undefined ? {} : { planPayoffChapter: args.planPayoffChapter },
         ...args.actualPayoffChapter === undefined ? {} : { actualPayoffChapter: args.actualPayoffChapter },
-      }, exec.signal)
+      }, signal), exec.signal)
       return {
         action: 'upsert', total: 1, items: [],
         recordId: r.recordId, updated: r.updated,
@@ -358,21 +425,22 @@ function registerPlotline(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryPlotlines(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => queryPlotlines(token, {
           ...args.type === undefined ? {} : { type: args.type },
-        }, exec.signal)
+        }, signal), exec.signal)
         return { action: 'query', total: items.length, items }
       }
       if (args.name === undefined || args.name === '') {
         throw new Error('upsert 必须提供 name（剧情线名）。')
       }
-      const r = await upsertPlotline(resolveWorkToken(args), {
-        name: args.name,
+      const name = args.name
+      const r = await withWorkToken(args, (token, signal) => upsertPlotline(token, {
+        name,
         ...args.type === undefined ? {} : { type: args.type },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.description === undefined ? {} : { description: args.description },
         ...args.chapterNos === undefined ? {} : { chapterNos: args.chapterNos },
-      }, exec.signal)
+      }, signal), exec.signal)
       return {
         action: 'upsert', total: 1, items: [],
         recordId: r.recordId, updated: r.updated,
@@ -414,20 +482,21 @@ function registerBranch(ctx: Context): void {
     },
     async execute(args, exec) {
       if (args.action === 'query') {
-        const items = await queryBranches(resolveWorkToken(args), {
+        const items = await withWorkToken(args, (token, signal) => queryBranches(token, {
           ...args.adoptStatus === undefined ? {} : { adoptStatus: args.adoptStatus },
-        }, exec.signal)
+        }, signal), exec.signal)
         return { action: 'query', total: items.length, items }
       }
       if (args.title === undefined || args.title === '') {
         throw new Error('upsert 必须提供 title（分支标题）。')
       }
-      const r = await upsertBranch(resolveWorkToken(args), {
-        title: args.title,
+      const title = args.title
+      const r = await withWorkToken(args, (token, signal) => upsertBranch(token, {
+        title,
         ...args.description === undefined ? {} : { description: args.description },
         ...args.adoptStatus === undefined ? {} : { adoptStatus: args.adoptStatus },
         ...args.note === undefined ? {} : { note: args.note },
-      }, exec.signal)
+      }, signal), exec.signal)
       return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated }
     },
   }))
@@ -497,45 +566,46 @@ function registerRelation(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      if (args.action === 'query') {
-        const rows = await queryRelations(baseToken, {
-          character: args.character,
-          type: args.type,
-          status: args.status,
-        }, exec.signal)
-        return { action: 'query', total: rows.length, items: rows, warnings: [] }
-      }
-      if (args.action === 'upsert') {
-        if (args.characterA === undefined || args.characterA === ''
-          || args.characterB === undefined || args.characterB === ''
-          || args.type === undefined) {
-          throw new Error('upsert 需要 characterA / characterB / type 三者齐全。')
+      return withWorkToken(args, async (baseToken, signal) => {
+        if (args.action === 'query') {
+          const rows = await queryRelations(baseToken, {
+            character: args.character,
+            type: args.type,
+            status: args.status,
+          }, signal)
+          return { action: 'query', total: rows.length, items: rows, warnings: [] as string[] }
         }
-        const r = await upsertRelation(baseToken, {
-          characterA: args.characterA,
-          characterB: args.characterB,
-          type: args.type,
-          description: args.description,
-          startChapter: args.startChapter,
-          status: args.status,
-          ...(args.force === undefined ? {} : { force: args.force }),
-        }, exec.signal)
-        return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated, warnings: r.warnings }
-      }
-      // delete
-      if (args.characterA === undefined || args.characterB === undefined || args.type === undefined) {
-        throw new Error('delete 需要 characterA / characterB / type 三者齐全。')
-      }
-      const r = await deleteRelation(baseToken, args.characterA, args.characterB, args.type, exec.signal)
-      return {
-        action: 'delete',
-        total: r.recordId === null ? 0 : 1,
-        items: [],
-        recordId: r.recordId ?? undefined,
-        updated: true,
-        warnings: r.recordId === null ? ['关系不存在，无需删除'] : [],
-      }
+        if (args.action === 'upsert') {
+          if (args.characterA === undefined || args.characterA === ''
+            || args.characterB === undefined || args.characterB === ''
+            || args.type === undefined) {
+            throw new Error('upsert 需要 characterA / characterB / type 三者齐全。')
+          }
+          const r = await upsertRelation(baseToken, {
+            characterA: args.characterA,
+            characterB: args.characterB,
+            type: args.type,
+            description: args.description,
+            startChapter: args.startChapter,
+            status: args.status,
+            ...(args.force === undefined ? {} : { force: args.force }),
+          }, signal)
+          return { action: 'upsert', total: 1, items: [], recordId: r.recordId, updated: r.updated, warnings: r.warnings }
+        }
+        // delete
+        if (args.characterA === undefined || args.characterB === undefined || args.type === undefined) {
+          throw new Error('delete 需要 characterA / characterB / type 三者齐全。')
+        }
+        const r = await deleteRelation(baseToken, args.characterA, args.characterB, args.type, signal)
+        return {
+          action: 'delete',
+          total: r.recordId === null ? 0 : 1,
+          items: [],
+          recordId: r.recordId ?? undefined,
+          updated: true,
+          warnings: r.recordId === null ? ['关系不存在，无需删除'] : [],
+        }
+      }, exec.signal)
     },
   }))
 }

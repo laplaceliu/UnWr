@@ -212,6 +212,14 @@ export function rememberChapterRecordId(
   chapterIdCache.set(`${baseToken}|${chapterNo}`, { recordId, at: Date.now() })
 }
 
+/** 删除章节后必须调本函数清缓存——否则同一会话内再创建同号章节会被旧 recordId 命中。 */
+export function forgetChapterRecordId(
+  baseToken: string,
+  chapterNo: number,
+): void {
+  chapterIdCache.delete(`${baseToken}|${chapterNo}`)
+}
+
 /**
  * 带缓存的章节号查找：命中缓存直接返回（无列表延迟）；
  * 未命中走列表查找，查到后回种缓存。

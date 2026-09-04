@@ -19,7 +19,7 @@ import {
   chapterHistory, listScenes, resolveChapterDoc, reviseChapter,
   restoreChapterVersion,
 } from '../domain/revision.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 
 /** 注册改稿相关工具。 */
 export function registerRevisionTools(ctx: Context): void {
@@ -173,25 +173,29 @@ function registerReviseChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const result = await reviseChapter(
-        resolveWorkToken(args),
-        args.chapterNo,
-        {
-          content: args.content,
-          action: args.action,
-          target: {
-            ...args.blockId === undefined ? {} : { blockId: args.blockId },
-            ...args.scene === undefined ? {} : { scene: args.scene },
-            ...args.paragraph === undefined ? {} : { paragraph: args.paragraph },
-            ...args.startParagraph === undefined ? {} : { startParagraph: args.startParagraph },
-            ...args.endParagraph === undefined ? {} : { endParagraph: args.endParagraph },
-            ...args.startBlockId === undefined ? {} : { startBlockId: args.startBlockId },
-            ...args.endBlockId === undefined ? {} : { endBlockId: args.endBlockId },
-            ...args.match === undefined ? {} : { match: args.match },
+      const result = await withWorkToken(
+        args,
+        (token, signal) => reviseChapter(
+          token,
+          args.chapterNo,
+          {
+            content: args.content,
+            action: args.action,
+            target: {
+              ...args.blockId === undefined ? {} : { blockId: args.blockId },
+              ...args.scene === undefined ? {} : { scene: args.scene },
+              ...args.paragraph === undefined ? {} : { paragraph: args.paragraph },
+              ...args.startParagraph === undefined ? {} : { startParagraph: args.startParagraph },
+              ...args.endParagraph === undefined ? {} : { endParagraph: args.endParagraph },
+              ...args.startBlockId === undefined ? {} : { startBlockId: args.startBlockId },
+              ...args.endBlockId === undefined ? {} : { endBlockId: args.endBlockId },
+              ...args.match === undefined ? {} : { match: args.match },
+            },
+            // 默认回写字数：改稿后字数必然变化
+            updateWordCount: args.updateWordCount ?? true,
           },
-          // 默认回写字数：改稿后字数必然变化
-          updateWordCount: args.updateWordCount ?? true,
-        },
+          signal,
+        ),
         exec.signal,
       )
       return {
@@ -238,7 +242,11 @@ function registerListScenes(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const { docToken } = await resolveChapterDoc(resolveWorkToken(args), args.chapterNo, exec.signal)
+      const { docToken } = await withWorkToken(
+        args,
+        (token, signal) => resolveChapterDoc(token, args.chapterNo, signal),
+        exec.signal,
+      )
       const scenes = await listScenes(docToken, exec.signal)
       return {
         chapterNo: args.chapterNo,
@@ -284,10 +292,9 @@ function registerHistory(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const r = await chapterHistory(
-        resolveWorkToken(args),
-        args.chapterNo,
-        args.pageSize ?? 20,
+      const r = await withWorkToken(
+        args,
+        (token, signal) => chapterHistory(token, args.chapterNo, args.pageSize ?? 20, signal),
         exec.signal,
       )
       return { ...r, total: r.entries.length }
@@ -366,15 +373,19 @@ function registerRestoreChapter(ctx: Context): void {
       if (args.revisionId !== undefined && args.historyVersionId !== undefined) {
         throw new Error('revisionId 与 historyVersionId 互斥，只能传一个。')
       }
-      const r = await restoreChapterVersion(
-        resolveWorkToken(args),
-        args.chapterNo,
-        {
-          revisionId: args.revisionId,
-          historyVersionId: args.historyVersionId,
-          waitTimeoutMs: args.waitTimeoutMs,
-          updateWordCount: args.updateWordCount,
-        },
+      const r = await withWorkToken(
+        args,
+        (token, signal) => restoreChapterVersion(
+          token,
+          args.chapterNo,
+          {
+            revisionId: args.revisionId,
+            historyVersionId: args.historyVersionId,
+            waitTimeoutMs: args.waitTimeoutMs,
+            updateWordCount: args.updateWordCount,
+          },
+          signal,
+        ),
         exec.signal,
       )
       return r

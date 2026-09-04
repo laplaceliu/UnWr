@@ -240,6 +240,39 @@ export async function updateRecords(
 }
 
 /**
+ * 批量删除记录。单批上限 100 条。
+ *
+ * **业务约束（调用方需自行保证）**：删除前请确认记录**没有业务关联**（章节已写正文 / 人物已被引用）。
+ * 本函数是硬删除——飞书记录一旦删除不可恢复（不像 relations 走软删除）。
+ *
+ * **CLI 契约**：
+ *   - `--record-id` 是 `stringArray`（可重复），每条记录一个 flag，不用逗号分隔
+ *   - `--yes` 是必须项（lark-cli 防误删）
+ *   - 失败响应无 `record_id_list`，仅 `ok: true` —— 调用方无需做返回校验
+ */
+export async function deleteRecords(
+  baseToken: string,
+  tableId: string,
+  recordIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (recordIds.length === 0) return
+  if (recordIds.length > 100) {
+    throw new Error(`batch delete supports max 100 records, got ${recordIds.length}`)
+  }
+  await runCli(
+    [
+      'base', '+record-delete',
+      '--base-token', baseToken,
+      '--table-id', tableId,
+      ...recordIds.flatMap((id) => ['--record-id', id]),
+      '--yes',
+    ],
+    { signal },
+  )
+}
+
+/**
  * 查询记录的结果。
  *
  * 矩阵形式（省带宽但难用）：`data` 是行的数组，每行列序与 `fields` 一致。

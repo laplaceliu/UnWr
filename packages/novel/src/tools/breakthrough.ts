@@ -20,7 +20,7 @@ import {
   TABLE, VOLUME_F,
 } from '@unwr/schema'
 import { base } from '@unwr/feishu'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 
 /* ------------------------------------------------------------------ */
 /* 域层封装（与 domain/memory.ts 的 buildContext 共享底子）                */
@@ -405,49 +405,50 @@ function registerBreakthrough(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      const chapterNo = args.chapterNo
-      const recentWindow = args.recentWindow ?? 5
+      return withWorkToken(args, async (baseToken, signal) => {
+        const chapterNo = args.chapterNo
+        const recentWindow = args.recentWindow ?? 5
 
-      // 第一批：章节/卷映射（互不依赖）
-      const maps = await loadChapterMaps(baseToken, exec.signal)
-      const outline = loadOutlineFor(maps, chapterNo)
-      const recent = loadRecentSummaries(maps, chapterNo, recentWindow)
+        // 第一批：章节/卷映射（互不依赖）
+        const maps = await loadChapterMaps(baseToken, signal)
+        const outline = loadOutlineFor(maps, chapterNo)
+        const recent = loadRecentSummaries(maps, chapterNo, recentWindow)
 
-      // 第二批并行：待回收伏笔 / 相关剧情线（依赖映射）+ 无关的独立查询
-      const [foreshadows, plotlines] = await Promise.all([
-        loadPendingForeshadows(baseToken, maps, exec.signal),
-        loadActivePlotlines(baseToken, maps, chapterNo, exec.signal),
-      ])
+        // 第二批并行：待回收伏笔 / 相关剧情线（依赖映射）+ 无关的独立查询
+        const [foreshadows, plotlines] = await Promise.all([
+          loadPendingForeshadows(baseToken, maps, signal),
+          loadActivePlotlines(baseToken, maps, chapterNo, signal),
+        ])
 
-      // 人物抽取：用户显式 > 自动抽取（按 recent 摘要）
-      const autoNames = extractCharacterNames(recent)
-      const characterNames = args.explicitCharacters !== undefined && args.explicitCharacters.length > 0
-        ? args.explicitCharacters
-        : autoNames.slice(0, 8) // 上限 8 个，避免关系网拉爆
+        // 人物抽取：用户显式 > 自动抽取（按 recent 摘要）
+        const autoNames = extractCharacterNames(recent)
+        const characterNames = args.explicitCharacters !== undefined && args.explicitCharacters.length > 0
+          ? args.explicitCharacters
+          : autoNames.slice(0, 8) // 上限 8 个，避免关系网拉爆
 
-      // 第二批并行：人物档案 + 关系网 + 相关设定
-      const [characters, relations, settings] = await Promise.all([
-        loadActiveCharacters(baseToken, characterNames, exec.signal),
-        loadActiveRelations(baseToken, characterNames, exec.signal),
-        loadRelevantSettings(baseToken, characterNames, exec.signal),
-      ])
+        // 第二批并行：人物档案 + 关系网 + 相关设定
+        const [characters, relations, settings] = await Promise.all([
+          loadActiveCharacters(baseToken, characterNames, signal),
+          loadActiveRelations(baseToken, characterNames, signal),
+          loadRelevantSettings(baseToken, characterNames, signal),
+        ])
 
-      const pack: BreakthroughPack = {
-        chapterNo,
-        outline: outline === undefined
-          ? undefined
-          : { title: outline.title, outline: outline.outline, volume: outline.volume },
-        stuckSnippet: args.stuckSnippet,
-        recentSummaries: recent,
-        activeCharacters: characters,
-        activeRelations: relations,
-        activePlotlines: plotlines,
-        pendingForeshadows: foreshadows,
-        relevantSettings: settings,
-        diagnosticPrompts: DIAGNOSTIC_PROMPTS,
-      }
-      return pack
+        const pack: BreakthroughPack = {
+          chapterNo,
+          outline: outline === undefined
+            ? undefined
+            : { title: outline.title, outline: outline.outline, volume: outline.volume },
+          stuckSnippet: args.stuckSnippet,
+          recentSummaries: recent,
+          activeCharacters: characters,
+          activeRelations: relations,
+          activePlotlines: plotlines,
+          pendingForeshadows: foreshadows,
+          relevantSettings: settings,
+          diagnosticPrompts: DIAGNOSTIC_PROMPTS,
+        }
+        return pack
+      }, exec.signal)
     },
   }))
 }

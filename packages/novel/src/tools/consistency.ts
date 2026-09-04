@@ -20,7 +20,7 @@ import {
 } from '../domain/consistency.ts'
 import { getWorkConfig } from '../domain/work.ts'
 import { renderReviewFocus, weightForIssueType } from '../genre/review-focus.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 
 /** 注册一致性检查工具。 */
 export function registerConsistencyTools(ctx: Context): void {
@@ -94,25 +94,27 @@ function registerRuleCheck(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      // 题材配置与检查并行拉取：权重与阈值来自作品表的题材预设（缺表降级为网文默认）
-      const [r, cfg] = await Promise.all([
-        runRuleChecks(
-          baseToken,
-          {
-            ...args.currentChapterNo === undefined ? {} : { currentChapterNo: args.currentChapterNo },
-            ...args.payoffTolerance === undefined ? {} : { payoffTolerance: args.payoffTolerance },
-            ...args.checkTimeline === undefined ? {} : { checkTimeline: args.checkTimeline },
-          },
-          exec.signal,
-        ),
-        getWorkConfig(baseToken, exec.signal),
-      ])
+      const { baseToken, cfg, r: checks } = await withWorkToken(args, async (token, signal) => {
+        // 题材配置与检查并行拉取：权重与阈值来自作品表的题材预设（缺表降级为网文默认）
+        const [r, cfg] = await Promise.all([
+          runRuleChecks(
+            token,
+            {
+              ...args.currentChapterNo === undefined ? {} : { currentChapterNo: args.currentChapterNo },
+              ...args.payoffTolerance === undefined ? {} : { payoffTolerance: args.payoffTolerance },
+              ...args.checkTimeline === undefined ? {} : { checkTimeline: args.checkTimeline },
+            },
+            signal,
+          ),
+          getWorkConfig(token, signal),
+        ])
+        return { baseToken: token, cfg, r }
+      }, exec.signal)
 
       const threshold = cfg.preset.consistency_weights.blocking_threshold
       // 红线问题的严重度由等级裁决（不采信模型自报），否则「严禁」档可能被
       // 填成低分而在高阈值题材下悄悄不阻断。必须在排序与算阻断数**之前**校正。
-      const normalized = r.issues.map(normalizeIssueSeverity)
+      const normalized = checks.issues.map(normalizeIssueSeverity)
       // 跨类型排序按题材权重降序（同类内保持领域层给出的严重度降序）
       const issues = [...normalized].sort((a, b) =>
         weightForIssueType(b.type, cfg.preset) - weightForIssueType(a.type, cfg.preset)
@@ -136,8 +138,8 @@ function registerRuleCheck(ctx: Context): void {
         })),
         genreFocus: renderReviewFocus(cfg.preset).genreFocus,
         blockingThreshold: threshold,
-        checkedTables: r.checkedTables,
-        skippedTables: r.skipped,
+        checkedTables: checks.checkedTables,
+        skippedTables: checks.skipped,
         ...persisted === undefined ? {} : { persisted },
       }
     },
@@ -209,11 +211,13 @@ function registerSemanticPack(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      const [pack, cfg] = await Promise.all([
-        buildSemanticCheckPack(baseToken, args.chapterNo, exec.signal),
-        getWorkConfig(baseToken, exec.signal),
-      ])
+      const { pack, cfg } = await withWorkToken(args, async (token, signal) => {
+        const [pack, cfg] = await Promise.all([
+          buildSemanticCheckPack(token, args.chapterNo, signal),
+          getWorkConfig(token, signal),
+        ])
+        return { pack, cfg }
+      }, exec.signal)
       return {
         ...pack,
         // 检查清单按题材权重排序（评审重点因题材而异，见 03 文档第六节）
@@ -266,7 +270,11 @@ function registerReviewFocus(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const cfg = await getWorkConfig(resolveWorkToken(args), exec.signal)
+      const cfg = await withWorkToken(
+        args,
+        (token, signal) => getWorkConfig(token, signal),
+        exec.signal,
+      )
       return renderReviewFocus(cfg.preset)
     },
   }))

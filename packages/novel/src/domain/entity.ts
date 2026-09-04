@@ -19,7 +19,7 @@ import {
 } from '@unwr/schema'
 import { awaitVisible } from './chapter.ts'
 import {
-  findChapterRecordIdCached, rememberChapterRecordId,
+  findChapterRecordIdCached, forgetChapterRecordId, rememberChapterRecordId,
 } from './organize.ts'
 
 /**
@@ -425,6 +425,110 @@ async function ensureVolumeRecord(
     /* timeoutMs */ 3000,
   )
   return id
+}
+
+/**
+ * 删除章节大纲/章节记录。
+ *
+ * **业务语义**：
+ *   - 章节没有正文（DOC_URL 为空且 WORDS=0）→ 硬删除整条章节记录
+ *   - 章节已有正文 → **拒绝删除**（必须先调 `novel_revise_chapter` 之类删除正文，
+ *     或显式 `force=true` 强行删——强行删会留下「飞书里有 docx 但章节表无对应记录」孤儿）
+ *   - 章节不存在 → 不报错，视为幂等成功（`deleted: false`）
+ *
+ * **核心场景**（2026-09-04 实机踩坑）：智能体用 `set_chapter_outline` 自动建章壳后，
+ * 漏传 workToken 写到了**默认作品**里，留下一条空壳。在本作品里没有「删章壳」的工具，
+ * 只能写「（误写入条目，已清理）」注释——用户期望是真删除。修本函数后智能体可清理。
+ *
+ * **强约束**：
+ *   1. 删除后必须 `forgetChapterRecordId` 清缓存（避免同会话内被旧 recordId 命中）
+ *   2. 删除有正文的章节时**绝不让步**（除非 force）：章节表 + 正文 docx 是双向参照，
+ *      删一边留孤儿会让后续 `findChapterRecordId` 找不到 docx 关联
+ */
+export async function deleteChapterOutline(
+  baseToken: string,
+  chapterNo: number,
+  options: { force?: boolean; reason?: string } = {},
+  signal?: AbortSignal,
+): Promise<{
+  recordId: string | undefined
+  chapterNo: number
+  deleted: boolean
+  /** true = 章节有正文被拒绝（需先删正文，或传 force=true） */
+  blockedByContent: boolean
+  /** 文本字数（用于决定是否保护） */
+  words: number
+  /** 文档 URL（用于诊断） */
+  docUrl: string | undefined
+  warnings: string[]
+}> {
+  const warnings: string[] = []
+  const recordId = await findChapterRecordId(baseToken, chapterNo, signal)
+  if (recordId === undefined) {
+    return {
+      recordId: undefined,
+      chapterNo,
+      deleted: false,
+      blockedByContent: false,
+      words: 0,
+      docUrl: undefined,
+      warnings: [`第 ${chapterNo} 章不存在，删除操作无副作用（幂等成功）。`],
+    }
+  }
+
+  // 读整条记录，判断是否有正文（DOC_URL 关联 docx 文档 + WORDS 字段）
+  const row = base.matrixToObjects(
+    await base.listRecords(baseToken, TABLE.CHAPTER, {
+      fieldIds: [CHAPTER_F.NO, CHAPTER_F.DOC_URL, CHAPTER_F.WORDS],
+      filter: { logic: 'and', conditions: [[CHAPTER_F.NO, '==', chapterNo]] },
+      limit: 1,
+    }, signal),
+  )[0]
+
+  const docUrl = typeof row?.[CHAPTER_F.DOC_URL] === 'string' && (row?.[CHAPTER_F.DOC_URL] as string) !== ''
+    ? row[CHAPTER_F.DOC_URL] as string
+    : undefined
+  const wordsRaw = row?.[CHAPTER_F.WORDS]
+  const words = typeof wordsRaw === 'number' ? wordsRaw
+    : typeof wordsRaw === 'string' ? Number.parseInt(wordsRaw, 10) || 0
+    : 0
+
+  if ((docUrl !== undefined || words > 0) && options.force !== true) {
+    return {
+      recordId,
+      chapterNo,
+      deleted: false,
+      blockedByContent: true,
+      words,
+      docUrl,
+      warnings: [
+        `第 ${chapterNo} 章已有正文（字数=${words}${docUrl !== undefined ? `, docx=${docUrl}` : ''}），` +
+        `拒绝删除章节壳。` +
+        (options.reason !== undefined ? `原因：${options.reason}。` : '') +
+        `请先用 novel_revise_chapter 删正文，或传 force=true 强行删除（强行删会留孤儿 docx）。`,
+      ],
+    }
+  }
+
+  if (options.force === true && (docUrl !== undefined || words > 0)) {
+    warnings.push(
+      `force=true 强行删除第 ${chapterNo} 章（字数=${words}），` +
+      `关联的 docx 文档${docUrl !== undefined ? `（${docUrl}）` : ''}将成为孤儿，需手动清理。`,
+    )
+  }
+
+  await base.deleteRecords(baseToken, TABLE.CHAPTER, [recordId], signal)
+  // 关键：清缓存，否则同会话内再创建同号章节会被旧 recordId 命中
+  forgetChapterRecordId(baseToken, chapterNo)
+  return {
+    recordId,
+    chapterNo,
+    deleted: true,
+    blockedByContent: false,
+    words,
+    docUrl,
+    warnings,
+  }
 }
 
 /**

@@ -18,7 +18,7 @@ import {
   countWords, findChapterRecord, maxChapterNo, writeChapter,
 } from '../domain/chapter.ts'
 import { extractDocToken } from '../context/builder.ts'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 import { listChapterBlocks } from '../domain/revision.ts'
 
 /** 注册章节相关工具。 */
@@ -87,21 +87,25 @@ function registerWriteChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const result = await writeChapter(
-        resolveWorkToken(args),
-        {
-          title: args.title,
-          content: args.content,
-          ...args.chapterNo === undefined ? {} : { chapterNo: args.chapterNo },
-          ...args.volume === undefined ? {} : { volume: args.volume },
-          ...args.outline === undefined ? {} : { outline: args.outline },
-          ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
-          ...args.cast === undefined ? {} : { cast: args.cast },
-        },
-        {
-          ...args.spaceId === undefined ? {} : { spaceId: args.spaceId },
-          ...args.parentNodeToken === undefined ? {} : { parentNodeToken: args.parentNodeToken },
-        },
+      const result = await withWorkToken(
+        args,
+        (token, signal) => writeChapter(
+          token,
+          {
+            title: args.title,
+            content: args.content,
+            ...args.chapterNo === undefined ? {} : { chapterNo: args.chapterNo },
+            ...args.volume === undefined ? {} : { volume: args.volume },
+            ...args.outline === undefined ? {} : { outline: args.outline },
+            ...args.storyTime === undefined ? {} : { storyTime: args.storyTime },
+            ...args.cast === undefined ? {} : { cast: args.cast },
+          },
+          {
+            ...args.spaceId === undefined ? {} : { spaceId: args.spaceId },
+            ...args.parentNodeToken === undefined ? {} : { parentNodeToken: args.parentNodeToken },
+          },
+          signal,
+        ),
         exec.signal,
       )
       return {
@@ -146,38 +150,40 @@ function registerAppendChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const recordId = await findChapterRecord(resolveWorkToken(args), args.chapterNo, exec.signal)
-      if (recordId === undefined) {
-        throw new Error(`第 ${args.chapterNo} 章不存在，请先用 novel_write_chapter 创建。`)
-      }
-      const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
-      const docUrl = rows.docUrl
-      if (docUrl === undefined || docUrl === '') {
-        throw new Error(
-          `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
-          + '请先用 novel_write_chapter 写入正文，再来续写。',
-        )
-      }
-      const token = extractDocToken(docUrl)
-      if (token === undefined) {
-        throw new Error(`无法从「${docUrl}」解析文档 token。`)
-      }
+      return withWorkToken(args, async (baseToken, signal) => {
+        const recordId = await findChapterRecord(baseToken, args.chapterNo, signal)
+        if (recordId === undefined) {
+          throw new Error(`第 ${args.chapterNo} 章不存在，请先用 novel_write_chapter 创建。`)
+        }
+        const rows = await base_listChapter(baseToken, args.chapterNo, signal)
+        const docUrl = rows.docUrl
+        if (docUrl === undefined || docUrl === '') {
+          throw new Error(
+            `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
+            + '请先用 novel_write_chapter 写入正文，再来续写。',
+          )
+        }
+        const token = extractDocToken(docUrl)
+        if (token === undefined) {
+          throw new Error(`无法从「${docUrl}」解析文档 token。`)
+        }
 
-      const res = await docs.appendDoc(token, args.content, exec.signal)
-      const appendedWords = countWords(args.content)
+        const res = await docs.appendDoc(token, args.content, signal)
+        const appendedWords = countWords(args.content)
 
-      // 回写总字数：读取当前正文统计，避免多轮续写后数字漂移
-      const full = await docs.fetchDoc(token, { docFormat: 'markdown' }, exec.signal)
-      const totalWords = countWords(full.content)
-      await base_updateWords(resolveWorkToken(args), recordId, totalWords, exec.signal)
+        // 回写总字数：读取当前正文统计，避免多轮续写后数字漂移
+        const full = await docs.fetchDoc(token, { docFormat: 'markdown' }, signal)
+        const totalWords = countWords(full.content)
+        await base_updateWords(baseToken, recordId, totalWords, signal)
 
-      return {
-        chapterNo: args.chapterNo,
-        documentId: token,
-        appendedWords,
-        totalWords,
-        revisionId: res.revision_id,
-      }
+        return {
+          chapterNo: args.chapterNo,
+          documentId: token,
+          appendedWords,
+          totalWords,
+          revisionId: res.revision_id,
+        }
+      }, exec.signal)
     },
   }))
 }
@@ -259,54 +265,56 @@ function registerReadChapter(ctx: Context): void {
       render: (_args, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }],
     },
     async execute(args, exec) {
-      const rows = await base_listChapter(resolveWorkToken(args), args.chapterNo, exec.signal)
-      if (rows.docUrl === undefined || rows.docUrl === '') {
-        throw new Error(
-          `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
-          + '请先用 novel_write_chapter 写入正文，再来阅读。',
+      return withWorkToken(args, async (baseToken, signal) => {
+        const rows = await base_listChapter(baseToken, args.chapterNo, signal)
+        if (rows.docUrl === undefined || rows.docUrl === '') {
+          throw new Error(
+            `第 ${args.chapterNo} 章没有正文文档（章节壳可能仅含大纲）。`
+            + '请先用 novel_write_chapter 写入正文，再来阅读。',
+          )
+        }
+        const token = extractDocToken(rows.docUrl)
+        if (token === undefined) {
+          throw new Error(`无法从「${rows.docUrl}」解析文档 token。`)
+        }
+
+        const mode = args.mode ?? 'full'
+        if (mode === 'search' && (args.keyword === undefined || args.keyword === '')) {
+          throw new Error('mode=search 时必须提供 keyword。')
+        }
+
+        // mode='blocks' 直走结构化路径——不进 markdown 也不进 outline XML；
+        // 它的输出语义跟 full/outline 完全不同，挂在外层 blocks 字段。
+        if (mode === 'blocks') {
+          const blocks = await listChapterBlocks(token, signal)
+          return {
+            chapterNo: args.chapterNo,
+            title: rows.title,
+            mode,
+            content: '',
+            words: 0,
+            blocks,
+          }
+        }
+
+        const doc = await docs.fetchDoc(
+          token,
+          {
+            docFormat: 'markdown',
+            ...mode === 'outline' ? { scope: 'outline' as const, docFormat: 'xml' as const } : {},
+            ...mode === 'search' ? { scope: 'keyword' as const, keyword: args.keyword } : {},
+          },
+          signal,
         )
-      }
-      const token = extractDocToken(rows.docUrl)
-      if (token === undefined) {
-        throw new Error(`无法从「${rows.docUrl}」解析文档 token。`)
-      }
 
-      const mode = args.mode ?? 'full'
-      if (mode === 'search' && (args.keyword === undefined || args.keyword === '')) {
-        throw new Error('mode=search 时必须提供 keyword。')
-      }
-
-      // mode='blocks' 直走结构化路径——不进 markdown 也不进 outline XML；
-      // 它的输出语义跟 full/outline 完全不同，挂在外层 blocks 字段。
-      if (mode === 'blocks') {
-        const blocks = await listChapterBlocks(token, exec.signal)
         return {
           chapterNo: args.chapterNo,
           title: rows.title,
           mode,
-          content: '',
-          words: 0,
-          blocks,
+          content: doc.content,
+          words: countWords(doc.content),
         }
-      }
-
-      const doc = await docs.fetchDoc(
-        token,
-        {
-          docFormat: 'markdown',
-          ...mode === 'outline' ? { scope: 'outline' as const, docFormat: 'xml' as const } : {},
-          ...mode === 'search' ? { scope: 'keyword' as const, keyword: args.keyword } : {},
-        },
-        exec.signal,
-      )
-
-      return {
-        chapterNo: args.chapterNo,
-        title: rows.title,
-        mode,
-        content: doc.content,
-        words: countWords(doc.content),
-      }
+      }, exec.signal)
     },
   }))
 }

@@ -11,7 +11,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
-import { resolveWorkToken } from './defaults.ts'
+import { withWorkToken } from './defaults.ts'
 import { markMemoriesStaleForChapter, setChapterTension } from '../domain/entity.ts'
 
 export function registerTensionTools(ctx: Context): void {
@@ -27,8 +27,11 @@ export function registerTensionTools(ctx: Context): void {
       score: { type: 'number', required: true, description: '1-5 整数。越界会被钳制并返回警告。' },
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      const r = await setChapterTension(baseToken, args.chapterNo, args.score, exec.signal)
+      const r = await withWorkToken(
+        args,
+        (baseToken, signal) => setChapterTension(baseToken, args.chapterNo, args.score, signal),
+        exec.signal,
+      )
       return { recordId: r.recordId, chapterNo: r.chapterNo, score: r.score, warnings: r.warnings }
     },
     output: {
@@ -55,8 +58,11 @@ export function registerTensionTools(ctx: Context): void {
       chapterNo: { type: 'number', required: true, description: '被改动的章节号。' },
     },
     async execute(args, exec) {
-      const baseToken = resolveWorkToken(args)
-      const r = await markMemoriesStaleForChapter(baseToken, args.chapterNo, exec.signal)
+      const r = await withWorkToken(
+        args,
+        (baseToken, signal) => markMemoriesStaleForChapter(baseToken, args.chapterNo, signal),
+        exec.signal,
+      )
       return { affected: r.affected, warnings: r.warnings }
     },
     output: {

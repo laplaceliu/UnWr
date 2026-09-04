@@ -37,6 +37,7 @@ vi.mock('@unwr/feishu', () => {
   return {
     FeishuError,
     hintFor: () => '',
+    configureLark: vi.fn(),
     base: {
       listRecords: vi.fn(async (_token: string, table: string, opts: { filter?: { conditions?: unknown[] } }) => {
         let items = Object.entries(store[table] ?? {})

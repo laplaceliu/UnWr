@@ -31,6 +31,7 @@ import { registerBreakthroughTools } from './tools/breakthrough.ts'
 import { registerCharacterArcTools } from './tools/character-arc.ts'
 import { registerTensionTools } from './tools/tension.ts'
 import { registerArgumentGuard } from './plugins/argument-guard.ts'
+import { registerWorkContextInjector } from './plugins/work-context-injector.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools', 'systemPrompt']
@@ -131,9 +132,32 @@ export const WRITING_CONVENTIONS = `
    novel_write_chapter 写」）。
 6. **角色委托可后台并行**：互不依赖的委托（如设定官+人物官）应放在
    同一条消息里并行发起。
-7. **workToken 纪律**：所有工具的 workToken 都**可省略**（自动沿用会话默认
-   作品）。30 位 base_token 手抄必错（实测单会话抄错 2 次），只在多作品间
-   显式切换时才传入；抄错报 NOTEXIST 时用 novel_manage_work(action=list) 核对。
+7. **workToken 纪律**：
+   - **强烈推荐**显式传 workToken（方向 1，2026-09-04 实机补）：虽然工具
+     支持省略（自动回退到默认作品），但**回退 = 猜**。猜对时无感，猜错时
+     会把数据写到别的作品（鸦骨账就是这条的受害者）。所有**写工具**
+     （set_chapter_outline / upsert_* / delete_chapter_outline /
+     novel_write_chapter / novel_update_summary 等）必须传 workToken；
+     读工具可省略。
+   - 抄 30 位 base_token 必错（实测 2 次 NOTEXIST）。不在多作品间切换时，
+     第一次**正确**传入即可；之后会话内沿用同 token，写工具仍要传，**只是
+     复制粘贴成本换可靠**。抄错报 NOTEXIST 时用 novel_manage_work(action=list)
+     核对。
+   - **写工具回退警告必须当真**（2026-09-04 实机踩坑追加）：当**写工具**的
+     args 没传 workToken 时，工具会用默认作品，**返回值里会带一条 warnings**
+     告知「本次使用了默认作品 X（profile=Y），如果当前在写另一部请显式传
+     workToken」。看到这条警告就要停下问自己：返回的数据/写入的目标是不是
+     用户当前对话里的那部？答不上来就不要继续——直接补传 workToken 再重试。
+     **这是防止"把鸦骨账的大纲写进当前作品"这类跨作品污染的关键防线**。
+   - **DSH profile 隔离**（同次踩坑追加）：每个 DSH profile 维护各自的
+     「lastWorkToken」落盘（~/.unwr/<profile>/work-state.json）。同时跑
+     unwr-agent 写 workA 和 unwr-web 写 workB 时，profile 隔离保证两者
+     不会因为「上次用过的作品」而互窜。
+   - **子代理 workToken 继承**（方向 3，2026-09-04 补）：委托 novel_agent_*
+     时，**插件会自动在 prompt 头部注入 [工作上下文 workToken=xxx workName=xxx]**——
+     子代理应当从这里提取 workToken，**每个**对 novel_* 的调用都显式传
+     进去（不要省，详见子代理 persona）。子代理若想脱离主会话改写不同作品，
+     应**在主会话层面**先建好新作品的 base_token，再委托时一并告知。
 8. **章节大纲的写入时机**：set_chapter_outline 对不存在的章节会**自动建壳**
    （状态=大纲、标题=第 N 章；传 volume 还会自动建同名卷壳），可以放心
    先批量规划整卷章纲再逐章起草。起草官 novel_write_chapter 写正式正文时
@@ -143,6 +167,12 @@ export const WRITING_CONVENTIONS = `
    已占用且有正文文档才拒绝（那时改用 append/revise）。
    因此 append/revise/read 报「没有正文文档」时，正确动作是**回头用
    novel_write_chapter 写**，不是反复试 append，更不是判定为死锁去问用户。
+   **章壳的清理**（2026-09-04 补）：发现章节表里有错误条目（误写入/编号错乱
+   的空壳）时，用 \`novel_manage_outline(action="delete_chapter_outline",
+   chapterNo=N)\` 硬删除。**保护**：若该章节已有正文（docx 或字数>0）默认拒绝，
+   防止误删留下孤儿 docx；需要强行删时传 \`force=true\`，但要自己负责清理
+   docx。**写注释占位（"已清理"）不是修复**——留一行的章节壳仍占着
+   chapterNo，下次想用同号就冲突。
 9. **改稿纪律**（这是最常见的卡死循环源头——务必先读完再动手）：
    - **同一场戏准备做 ≥3 处编辑就停下来**：先用 action="replace" +
      scene + startParagraph/endParagraph 一次性重写整段（一次 CLI 往返即可完成
@@ -237,6 +267,13 @@ export function apply(ctx: Context, config: Config = {}): void {
   // `arguments must be an object`，模型反复重试 5+ 次仍不知真因。
   // 这里在工具注册之后挂上 waterfall 监听器，把 schema 错误翻译成可诊断信息。
   registerArgumentGuard(ctx)
+
+  // workToken 上下文注入——子代理委托时自动把主会话的 workToken/workName
+  // 写到 prompt 头部。实机 2026-09-04：主会话漏传 workToken 给子代理，
+  // 子代理用自己的 lastWorkToken 写到鸦骨账而不是当前作品。修复后
+  // 子代理必然在 prompt 头部看到 [工作上下文] 标记，persona 提示
+  // 它提取 workToken 并显式传给每个 novel_* 调用。
+  registerWorkContextInjector(ctx)
 
   // 向主会话注入写作约定。
   // text 是惰性函数：DSH 组装 prompt 时才调用。作用域检查用官方同款

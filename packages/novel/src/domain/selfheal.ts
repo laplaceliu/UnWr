@@ -145,6 +145,63 @@ export async function createRecordsWithSelfHeal(
   throw new Error(`写入 ${table} 失败：重试循环异常退出`) // 不可达，类型守卫用
 }
 
+function isPermanentBaseTokenError(e: import('@unwr/feishu').FeishuError): boolean {
+  const message = e.message
+  return /has been deleted|invalid.?base.?token|invalid base token/i.test(message)
+    || e.code === 230002
+}
+
+/**
+ * 读取记录时的轻量自愈。
+ *
+ * record-list 在新建多维表格后的分钟级收敛窗口内可能短暂返回
+ * 800030201/not_found；这类错误不能直接暴露给模型。第二次失败时补齐
+ * schema，随后按与写侧相同的 0/3/6/9 秒节奏重试。若错误明确表示
+ * base_token 已删除/无效，则不再消耗新库收敛等待时间。
+ */
+export async function listRecordsWithSelfHeal(
+  baseToken: string,
+  table: string,
+  options: Parameters<typeof base.listRecords>[2] = {},
+  signal: AbortSignal | undefined,
+  onHeal?: (event: HealEvent) => void,
+): Promise<Awaited<ReturnType<typeof base.listRecords>>> {
+  const { FeishuError, hintFor } = await import('@unwr/feishu')
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      return await base.listRecords(baseToken, table, options, signal)
+    } catch (e) {
+      if (!(e instanceof FeishuError)) throw e
+      if (e.kind === 'auth' || e.kind === 'permission' || e.code === 230002 || isPermanentBaseTokenError(e)) {
+        const hint = hintFor(e.kind)
+        throw new Error(
+          `读取 ${table} 失败：base_token 无效或已删除（${e.message}）。`
+          + (hint ? `；${hint}` : '')
+          + ' 请用 novel_manage_work(action=list) 核对正确的 base_token。',
+          { cause: e },
+        )
+      }
+      // 800030201 = 字段不属于该表；not_found = 新库收敛期的资源不可见。
+      if ((e.code !== 800030201 && e.kind !== 'not_found') || attempt === 4) {
+        const hint = hintFor(e.kind)
+        throw new Error(
+          `读取 ${table} 失败：${e.code ?? e.kind} — ${e.message}`
+          + (hint ? `；${hint}` : '')
+          + '（已在新库收敛重试后失败，请检查 base_token/表名或稍后重试）',
+          { cause: e },
+        )
+      }
+      onHeal?.({ level: 'info', message: `读取 ${table} 遇 ${e.code ?? e.kind}（新库收敛中），退避重试 ${attempt}/3……` })
+      await new Promise((r) => setTimeout(r, attempt * 3000))
+      if (attempt === 2) {
+        const { initWork } = await import('./bootstrap.ts')
+        await initWork(baseToken, signal).catch(() => undefined)
+      }
+    }
+  }
+  throw new Error(`读取 ${table} 失败：重试循环异常退出`) // 不可达，类型守卫用
+}
+
 /**
  * 判断 patch 值是否是 link 形状：[{id}] 或 ["recv..."]。
  * 空数组不算（可能是「清空 link」的合法写入，且无需验证）。
