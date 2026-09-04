@@ -21,16 +21,21 @@ interface MinimalTool {
 }
 
 /** 构造最小 fake Cordis context。 */
-function fakeContext(): { ctx: unknown; registered: MinimalTool[] } {
+function fakeContext(): { ctx: unknown; registered: MinimalTool[]; listeners: string[] } {
   const registered: MinimalTool[] = []
+  const listeners: string[] = []
   const ctx = {
     tools: {
       register(tool: MinimalTool): void {
         registered.push(tool)
       },
     },
+    // argument-guard 等插件通过 ctx.on('tools/pre-execute', ...) 注册瀑布监听器
+    on(event: string, _listener: (...args: unknown[]) => unknown): void {
+      listeners.push(event)
+    },
   }
-  return { ctx, registered }
+  return { ctx, registered, listeners }
 }
 
 /**

@@ -212,8 +212,9 @@ function readCanonical(relPath) {
  * 角色子代理，与 web 实例同一份 canonical，防止两处漂移）
  *          + profiles/agent/headless-overlay.yml 渲染（headless 专属覆盖）。
  *
- * 与 sync-cordis-patch.mjs 的关系：那个脚本服务 web profile（3080 实例），
- * 本函数服务验收 profile；两者读同一份 canonical，互不覆盖。
+ * 与 sync-cordis-patch.mjs 的关系：那个脚本只产出源码版 DSH 的
+ * --patch overlay（dist/cordis.local.yml），本函数服务验收 profile；
+ * 两者读同一份 canonical，互不覆盖。
  */
 function installAgentProfile() {
   // 仓库根：优先 UNWR_ROOT 环境变量（与 sync-cordis-patch 语义一致），

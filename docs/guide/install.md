@@ -97,10 +97,16 @@ GitHub：https://github.com/anywhere-labs/dsh-desktop
 **解决**——任选一种：
 
 ```yaml
-# ~/.dsh/profiles/web/cordis.patch.yml 的 unwr-novel 块（推荐，部署级显式）
-larkBin: /usr/local/bin/lark-cli
-# 或 Windows：
-larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
+# ~/.dsh/profiles/web/cordis.patch.yml —— 新建/追加「按 id 覆盖」行。
+# 勿用 insert：组合包已 insert 同 id 行，重复 insert 启动会报
+# duplicate loader entry id；覆盖须重述该行全部 config 键。
+- id: unwr-novel
+  config:
+    readOnlySafeMode: true
+    verbose: false
+    larkBin: /usr/local/bin/lark-cli        # macOS / Linux
+    # 或 Windows：
+    # larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd
 ```
 
 ```bash
@@ -166,6 +172,7 @@ npx @deepseek-ai/dsh --profile unwr-agent "用 novel_manage_work 列出我的所
 | `npx: command not found` | Node 不在 PATH。先 `which node` 验证；nvm 用户跑 `nvm use 24`；apt 用户跑 `sudo apt install nodejs npm` |
 | `dsh: command not found` | dsh 不是全局命令，必须用 `npx @deepseek-ai/dsh ...`；嫌长加 alias：`echo "alias dsh='npx @deepseek-ai/dsh'" >> ~/.zshrc && source ~/.zshrc` |
 | 工具报 `unknown tool` | 未重启 DSH；改完 bundle 必须 `Ctrl+C` 重启 |
+| 启动报 `duplicate loader entry id: unwr-…` | home 级 `~/.dsh/profiles/web/cordis.patch.yml` 里 insert 了与组合包同 id 的行（旧开发态遗留）。删掉该文件里的 insert 块，只留按 id 覆盖行（重述该行全部 config 键），或整个删除该文件后重启 |
 | 启动后看不到 28 工具 | `npx @deepseek-ai/dsh --profile web --dump-config` 看 `unwr-novel` 块；权限问题跑 `lark-cli auth status` |
 | `npx` 长时间无响应 | 首次会下载 `@deepseek-ai/dsh` 到 `~/.npm/_npx`，等 30-60s；可用 `npx @deepseek-ai/dsh@<版本>` 锁版本加速 |
 | `lark-cli auth status` 显示未登录 | 跑 `lark-cli auth login --recommend`；服务器环境走 `lark-cli auth login --no-wait --device-code` |

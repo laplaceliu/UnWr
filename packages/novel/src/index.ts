@@ -4,8 +4,8 @@
  * 小说写作 AI 智能体的 DSH 工具插件：25 个 novel_* 领域工具。
  *
  * 多智能体编排（7 个 novel_agent_* 委托工具）**不在这里注册**——
- * 由宿主配置层（profiles/web/cordis.patch.yml，运行时同步到
- * ~/.dsh/profiles/web/cordis.patch.yml）加载官方
+ * 由宿主配置层（profiles/web/cordis.patch.yml——发布为 @laplaceliu/unwr
+ * 组合包自带 patch，随包安装进 profile）加载官方
  * @deepseek-ai/dsh-tool-subagent 的 7 个实例实现，见该文件。
  * spawn provider 由宿主 dsh-base 内置。
  *
@@ -30,6 +30,7 @@ import { registerCalculateTools } from './tools/calculate.ts'
 import { registerBreakthroughTools } from './tools/breakthrough.ts'
 import { registerCharacterArcTools } from './tools/character-arc.ts'
 import { registerTensionTools } from './tools/tension.ts'
+import { registerArgumentGuard } from './plugins/argument-guard.ts'
 
 export const name = 'unwr-novel'
 export const inject = ['tools', 'systemPrompt']
@@ -229,6 +230,13 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerBreakthroughTools(ctx)
   registerCharacterArcTools(ctx)
   registerTensionTools(ctx)
+
+  // 全局参数守卫——拦截模型 tool_call 的 arguments 非 plain object 情况。
+  // 实机 2026-09-04：模型生成 arguments JSON 时撞 token 上限被截断，
+  // DSH parseArguments 返回原始字符串，schema 校验只报
+  // `arguments must be an object`，模型反复重试 5+ 次仍不知真因。
+  // 这里在工具注册之后挂上 waterfall 监听器，把 schema 错误翻译成可诊断信息。
+  registerArgumentGuard(ctx)
 
   // 向主会话注入写作约定。
   // text 是惰性函数：DSH 组装 prompt 时才调用。作用域检查用官方同款

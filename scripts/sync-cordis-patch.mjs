@@ -1,9 +1,9 @@
 /**
- * 把仓内的占位符配置生成为「实机可用」的副本（含真实绝对路径）。
+ * 把仓内的占位符配置生成为「源码版 DSH」的 --patch overlay（含真实绝对路径）。
  *
- * 产物两份（都已脱离 git）：
- *   1. ~/.dsh/profiles/web/cordis.patch.yml   —— npx 安装版 DSH 的用户层 patch
- *   2. <root>/dist/cordis.local.yml           —— 源码版 DSH 的 --patch overlay
+ * 产物（已脱离 git）：
+ *   <root>/dist/cordis.local.yml —— 源码版 DSH 启动用：
+ *     pnpm dsh web --patch <UNWR_ROOT>/dist/cordis.local.yml --port 3082
  *
  * 为何要脚本：DSH 要求插件 name 是可直接 import 的字符串，而 loader
  * （cordis-plugin-loader >= 1.0.3）只对 config / disabled 字段做 `!!js`
@@ -11,6 +11,12 @@
  * "name.startsWith is not a function"（实机踩坑 2026-09-02）。
  * 因此仓内 canonical 用占位符 __UNWR_ROOT__（保持零个人路径，隐私红线
  * memory 78207951），由本脚本在生成时内联真实路径。
+ *
+ * 曾有第二个产物 ~/.dsh/profiles/web/cordis.patch.yml（npx 安装版 DSH 的
+ * home 副本），已随 npm 组合包发布流（scripts/build-publish.mjs）退休：
+ * 组合包自带 insert 全部插件行的 patch，home 层再 insert 同 id 行会报
+ * "duplicate loader entry id"（实机踩坑 2026-09-04）。home 层现在是
+ * 用户自有文件，只允许放按 id 覆盖行——本脚本不再写它。
  *
  * 护栏：
  *   1. canonical 源文件**禁止**含个人 home 路径（防回退污染）
@@ -37,10 +43,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 占位符 → 实机副本的映射：源文件 → 生成目标。 */
 const TARGETS = [
-  {
-    src: resolve(root, 'profiles/web/cordis.patch.yml'),
-    dst: resolve(homedir(), '.dsh', 'profiles', 'web', 'cordis.patch.yml'),
-  },
   {
     src: resolve(root, 'cordis.yml'),
     dst: resolve(root, 'dist', 'cordis.local.yml'),

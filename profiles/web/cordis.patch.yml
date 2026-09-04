@@ -1,11 +1,17 @@
-# UnWr —— Unlimited Writing 插件层（用户级 patch，最后应用）。
+# UnWr —— Unlimited Writing 插件层（canonical 单一真源）。
 #
-# 这是仓内的 **canonical** 配置。请勿直接编辑此文件的 home 副本：
-#   ~/.dsh/profiles/web/cordis.patch.yml
-# 它由 `scripts/sync-cordis-patch.mjs` 从本文件同步产生。
+# 本文件是 unwr-novel / unwr-web / 7 个 unwr-agent-* 全部插件行的唯一真源：
+#   - 发布流：scripts/build-publish.mjs 读它生成 @laplaceliu/unwr 组合包
+#     自带的 cordis.patch.yml（发布态改写：占位符→包名引用、verbose→false）
+#   - 验收流：scripts/setup-test-base.mjs 读它渲染 unwr-agent profile
+#
+# 注意：home 级 ~/.dsh/profiles/web/cordis.patch.yml 是**用户自有**的覆盖层，
+# 不由本仓生成；里面只允许放按 id 覆盖行（重述该行全部 config 键），
+# 再 insert 本文件的同 id 行会报 "duplicate loader entry id"（2026-09-04 实机踩坑）。
 #
 # 加载顺序（cordis patch 是 LIFO）：
-#   profile.bundles → profile patch → cordis.patch.yml（用户层，本文件）
+#   profile.bundles（含 @laplaceliu/unwr 组合包自带 patch，源于本文件）
+#   → profile / home 级用户覆盖 patch
 #   → --patch overlay（命令行，最高优先级，常用于临时调试）
 #
 # 组成：
@@ -38,7 +44,8 @@
 #   但无法核对，实机 2026-09-02 大纲官因此报 unknown tool。
 #   要硬隔离就得把 novel_manage_* 拆成 query/upsert 两组，代价是工具数暴涨，暂不做。
 #
-# 修改角色提示词后重启 DSH 即生效，无需 pnpm build。
+# 修改角色提示词后：重新 pnpm pack:plugin 并 re-add（npm/tarball 流），
+# 或重跑 pnpm test:setup-base 渲染 unwr-agent profile，然后重启 DSH。
 
 - insert:
     # ---------- 领域工具 ----------
