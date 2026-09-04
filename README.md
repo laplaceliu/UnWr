@@ -146,6 +146,21 @@ larkBin: C:\Users\<你>\AppData\Roaming\npm\lark-cli.cmd   # Windows
 
 `work-state.json` 落在 `~/.unwr/`（仓库外）。
 
+## 维护者：发布新版本
+
+完整发布链（npm + GitHub Release + git tag），授权从 `GITHUB_TOKEN` 环境变量自动读取：
+
+```bash
+# 0. 一次性配置：~/.zshrc 里 export GITHUB_TOKEN=<fine-grained PAT，仅需 repo Contents 读写>
+# 1. 同步 bump 根 package.json 与 packages/plugin/package.json 的 version
+pnpm pack:plugin        # build + bundle 验证 + 隐私扫描 + dist/laplaceliu-unwr-<ver>.tgz
+git add -A && git commit -m "chore(release): v<ver>" && git tag v<ver>
+git push origin main v<ver>
+npm publish --access public --prefix packages/plugin
+pnpm release:github v<ver>            # 创建 GitHub Release + 上传 tgz（幂等）
+# 可选：pnpm release:github v<ver> --notes <markdown 文件> 指定/更新 release notes
+```
+
 ## License
 
 MIT
